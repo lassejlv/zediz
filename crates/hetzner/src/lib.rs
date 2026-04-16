@@ -58,6 +58,8 @@ impl HetznerClient {
     }
 
     /// Find SSH key by fingerprint, or upload it. Returns the Hetzner-side id.
+    /// If the preferred name collides with an unrelated key already on Hetzner,
+    /// retry once with a fingerprint-suffixed name.
     pub async fn ensure_ssh_key(
         &self,
         name: &str,
@@ -71,12 +73,29 @@ impl HetznerClient {
         {
             return Ok(k.id);
         }
+
         let body = serde_json::json!({
             "name": name,
             "public_key": public_key,
         });
-        let created: CreateSshKeyResponse = self.post_json("/ssh_keys", &body).await?;
-        Ok(created.ssh_key.id)
+        match self
+            .post_json::<_, CreateSshKeyResponse>("/ssh_keys", &body)
+            .await
+        {
+            Ok(created) => Ok(created.ssh_key.id),
+            Err(HetznerError::Api { status: 409, .. }) => {
+                let suffix = fingerprint_suffix(fingerprint);
+                let unique = format!("{name}-{suffix}");
+                let body = serde_json::json!({
+                    "name": &unique,
+                    "public_key": public_key,
+                });
+                let created: CreateSshKeyResponse =
+                    self.post_json("/ssh_keys", &body).await?;
+                Ok(created.ssh_key.id)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     pub async fn create_server(
@@ -403,4 +422,15 @@ pub fn pick_server_type<'a>(
 
     candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     candidates.into_iter().next().map(|(t, _)| t)
+}
+
+fn fingerprint_suffix(fingerprint: &str) -> String {
+    fingerprint
+        .rsplit(':')
+        .next()
+        .unwrap_or(fingerprint)
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect()
 }
