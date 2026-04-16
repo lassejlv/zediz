@@ -111,11 +111,7 @@ impl HetznerClient {
         })
     }
 
-    async fn post_create_ssh_key(
-        &self,
-        name: &str,
-        public_key: &str,
-    ) -> Result<i64, HetznerError> {
+    async fn post_create_ssh_key(&self, name: &str, public_key: &str) -> Result<i64, HetznerError> {
         let body = serde_json::json!({
             "name": name,
             "public_key": public_key,

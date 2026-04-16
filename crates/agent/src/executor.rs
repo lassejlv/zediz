@@ -76,8 +76,56 @@ impl Executor {
                 Ok(()) => ok(id),
                 Err(e) => err(id, e.to_string()),
             },
+            "update_routes" => match self.handle_update_routes(cmd).await {
+                Ok(()) => ok(id),
+                Err(e) => err(id, e.to_string()),
+            },
             other => err(id, format!("unsupported command kind: {other}")),
         }
+    }
+
+    async fn handle_update_routes(&mut self, cmd: crate::client::Command) -> Result<()> {
+        let raw = cmd
+            .payload
+            .get("routes")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let docker = self.docker.inner();
+        crate::caddy::ensure_running(&docker).await?;
+
+        let mut routes = Vec::with_capacity(raw.len());
+        for item in &raw {
+            let hostname = item
+                .get("hostname")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("route missing hostname"))?
+                .to_string();
+            let container_port = item
+                .get("container_port")
+                .and_then(|v| v.as_u64())
+                .and_then(|n| n.try_into().ok())
+                .unwrap_or(80u16);
+            let container_name = item
+                .get("container_name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("route missing container_name"))?
+                .to_string();
+
+            // Make sure the target container is attached to the shared
+            // `zediz` network so Caddy can dial it by name.
+            crate::caddy::ensure_container_on_network(&docker, &container_name).await?;
+
+            routes.push(crate::caddy::Route {
+                hostname,
+                container_port,
+                container_name,
+            });
+        }
+
+        crate::caddy::apply_routes(&routes).await?;
+        Ok(())
     }
 
     async fn handle_pull_and_run(&mut self, cmd: crate::client::Command) -> Result<()> {

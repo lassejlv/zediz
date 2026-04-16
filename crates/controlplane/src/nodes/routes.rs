@@ -33,6 +33,7 @@ pub struct NodeSummary {
     pub used_memory_mb: i32,
     pub used_disk_mb: i32,
     pub labels: JsonValue,
+    pub public_ipv4: Option<String>,
     pub last_seen_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }
@@ -50,6 +51,7 @@ struct NodeRow {
     used_memory_mb: Option<i64>,
     used_disk_mb: Option<i64>,
     labels: JsonValue,
+    public_ipv4: Option<String>,
     last_seen_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
 }
@@ -72,6 +74,7 @@ impl TryFrom<NodeRow> for NodeSummary {
             used_memory_mb: r.used_memory_mb.unwrap_or(0) as i32,
             used_disk_mb: r.used_disk_mb.unwrap_or(0) as i32,
             labels: r.labels,
+            public_ipv4: r.public_ipv4,
             last_seen_at: r.last_seen_at,
             created_at: r.created_at,
         })
@@ -91,7 +94,7 @@ async fn list(
                 COALESCE(SUM(a.cpu_millis), 0)::bigint AS used_cpu_millis, \
                 COALESCE(SUM(a.memory_mb), 0)::bigint AS used_memory_mb, \
                 COALESCE(SUM(a.disk_mb), 0)::bigint AS used_disk_mb, \
-                n.labels, n.last_seen_at, n.created_at \
+                n.labels, n.public_ipv4, n.last_seen_at, n.created_at \
          FROM nodes n \
          LEFT JOIN node_allocations a ON a.node_id = n.id \
          WHERE n.workspace_id = $1 \

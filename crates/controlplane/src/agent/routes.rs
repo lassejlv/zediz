@@ -278,6 +278,18 @@ async fn deployment_status(
             .await?;
     }
 
+    // Any status change on a deployment might alter which hostnames this node
+    // should serve. Recompute + push the route set.
+    if matches!(
+        update.status.as_str(),
+        "running" | "stopped" | "errored" | "failing"
+    ) {
+        if let Err(e) = crate::scheduler::push_routes_for_node(state.pool(), &claims.node_id).await
+        {
+            tracing::warn!(error = ?e, node = %claims.node_id, "push_routes_for_node");
+        }
+    }
+
     Ok(())
 }
 

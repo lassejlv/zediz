@@ -126,6 +126,19 @@ export interface DeploymentSummary {
   updated_at: string;
 }
 
+export type TlsStatus = 'pending' | 'active' | 'failed';
+
+export interface DomainSummary {
+  id: string;
+  service_id: string;
+  hostname: string;
+  container_port: number;
+  tls_status: TlsStatus;
+  last_error: string | null;
+  last_cert_at: string | null;
+  created_at: string;
+}
+
 export interface NodeSummary {
   id: string;
   name: string;
@@ -138,6 +151,7 @@ export interface NodeSummary {
   used_memory_mb: number;
   used_disk_mb: number;
   labels: Record<string, unknown>;
+  public_ipv4: string | null;
   last_seen_at: string | null;
   created_at: string;
 }

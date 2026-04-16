@@ -15,6 +15,7 @@ pub enum CommandKind {
     Remove,
     Drain,
     Prune,
+    UpdateRoutes,
 }
 
 impl CommandKind {
@@ -26,6 +27,7 @@ impl CommandKind {
             CommandKind::Remove => "remove",
             CommandKind::Drain => "drain",
             CommandKind::Prune => "prune",
+            CommandKind::UpdateRoutes => "update_routes",
         }
     }
 }

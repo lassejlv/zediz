@@ -55,10 +55,10 @@ pub async fn provision(
             let cpu_need = (need.cpu_millis as f32 * HEADROOM) as u32;
             let mem_need = (need.memory_mb as f32 * HEADROOM) as u32;
             let disk_need = (need.disk_mb as f32 * HEADROOM) as u32;
-            let picked =
-                pick_server_type(&types, location, cpu_need, mem_need, disk_need).ok_or_else(
-                    || anyhow!("no Hetzner server type fits requested resources in {location}"),
-                )?;
+            let picked = pick_server_type(&types, location, cpu_need, mem_need, disk_need)
+                .ok_or_else(|| {
+                    anyhow!("no Hetzner server type fits requested resources in {location}")
+                })?;
             ServerType {
                 id: picked.id,
                 name: picked.name.clone(),
@@ -75,9 +75,7 @@ pub async fn provision(
                 .find(|t| t.name.eq_ignore_ascii_case(name))
                 .ok_or_else(|| anyhow!("unknown Hetzner server type: {name}"))?;
             if !found.prices.iter().any(|p| p.location == location) {
-                return Err(anyhow!(
-                    "server type {name} is not available in {location}"
-                ));
+                return Err(anyhow!("server type {name} is not available in {location}"));
             }
             ServerType {
                 id: found.id,

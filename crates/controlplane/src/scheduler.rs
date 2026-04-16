@@ -327,21 +327,18 @@ async fn try_provision_for(
         )));
     }
 
-    let token = match credentials::first_hetzner_token(
-        state.pool(),
-        state.master_key(),
-        workspace_id,
-    )
-    .await
-    .context("fetching Hetzner token")?
-    {
-        Some(t) => t,
-        None => {
-            return Ok(ProvisionOutcome::Skipped(
-                "no Hetzner API token credential in this workspace".into(),
-            ));
-        }
-    };
+    let token =
+        match credentials::first_hetzner_token(state.pool(), state.master_key(), workspace_id)
+            .await
+            .context("fetching Hetzner token")?
+        {
+            Some(t) => t,
+            None => {
+                return Ok(ProvisionOutcome::Skipped(
+                    "no Hetzner API token credential in this workspace".into(),
+                ));
+            }
+        };
 
     let ssh_key_ids = ensure_workspace_ssh_keys(state.pool(), workspace_id, &token).await?;
 
@@ -451,6 +448,32 @@ async fn autoscale_down(state: &AppState) -> Result<()> {
         {
             tracing::warn!(error = ?e, node = %c.id, "terminate failed");
         }
+    }
+    Ok(())
+}
+
+/// Enqueue an `update_routes` command for the given node with the current
+/// hostname → deployment route set (derived from service_domains + running
+/// deployments).
+pub async fn push_routes_for_node(pool: &PgPool, node_id: &str) -> Result<()> {
+    let routes = crate::domains::routes_for_node(pool, node_id).await?;
+    let payload = json!({
+        "routes": routes.iter().map(|r| json!({
+            "hostname": r.hostname,
+            "container_port": r.container_port,
+            "deployment_id": r.deployment_id,
+            "container_name": r.container_name,
+        })).collect::<Vec<_>>(),
+    });
+    commands::enqueue(pool, node_id, None, CommandKind::UpdateRoutes, payload).await?;
+    Ok(())
+}
+
+/// Push route updates to every node currently running a deployment of this service.
+pub async fn push_routes_for_service(pool: &PgPool, service_id: &str) -> Result<()> {
+    let nodes = crate::domains::nodes_for_service(pool, service_id).await?;
+    for node_id in nodes {
+        push_routes_for_node(pool, &node_id).await?;
     }
     Ok(())
 }

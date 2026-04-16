@@ -10,6 +10,7 @@ import { useRestartDeployment, useStopDeployment } from '@/lib/deployments';
 import { workspaceQuery } from '@/lib/workspaces';
 import { ApiError } from '@/lib/api';
 import { Button, Card, ErrorText } from '@/components/ui';
+import { DomainsSection } from '@/components/domains-section';
 import type { DeploymentStatus, DeploymentSummary } from '@/lib/types';
 
 export const Route = createFileRoute(
@@ -120,6 +121,14 @@ function ServicePage() {
           </div>
         </Card>
       ) : null}
+
+      <DomainsSection
+        workspaceSlug={workspaceSlug}
+        projectSlug={projectSlug}
+        serviceSlug={serviceSlug}
+        canManage={canDeploy}
+        defaultPort={svc?.ports?.[0]?.container_port ?? null}
+      />
 
       <div>
         <h2 className="mb-3 text-sm font-medium">Deployments</h2>

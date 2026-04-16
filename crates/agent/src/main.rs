@@ -3,6 +3,7 @@ use clap::Parser;
 use std::time::Duration;
 use zediz_common::telemetry;
 
+mod caddy;
 mod client;
 mod docker;
 mod executor;
@@ -66,6 +67,12 @@ async fn main() -> Result<()> {
     };
 
     let docker = DockerExec::connect().context("connecting to local docker")?;
+
+    // Bring up the Caddy sidecar + shared network once at boot; update_routes
+    // commands will keep its config in sync after that.
+    if let Err(e) = caddy::ensure_running(&docker.inner()).await {
+        tracing::warn!(error = ?e, "caddy sidecar bootstrap failed (will retry on first update_routes)");
+    }
 
     let heartbeat_interval = Duration::from_secs(10);
     let mut exec = executor::Executor::new(client, docker, node_token, node_id);

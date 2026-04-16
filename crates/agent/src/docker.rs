@@ -25,6 +25,10 @@ impl DockerExec {
         Ok(Self { docker })
     }
 
+    pub fn inner(&self) -> Docker {
+        self.docker.clone()
+    }
+
     pub fn container_name(deployment_id: &str) -> String {
         format!("{PREFIX}{deployment_id}")
     }
@@ -85,6 +89,9 @@ impl DockerExec {
                 name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
                 ..Default::default()
             }),
+            // Join the shared `zediz` network so Caddy can reach this
+            // container by name for domain routing.
+            network_mode: Some(crate::caddy::NETWORK.into()),
             ..Default::default()
         };
 

@@ -14,6 +14,7 @@ mod credentials;
 mod crypto;
 mod db;
 mod deployments;
+mod domains;
 mod error;
 mod nodes;
 mod projects;
@@ -80,6 +81,7 @@ fn router(state: AppState) -> Router {
         .merge(services::routes::router())
         .merge(nodes::routes::router())
         .merge(deployments::routes::router())
+        .merge(domains::routes::router())
         .merge(agent::routes::router());
 
     Router::new()
