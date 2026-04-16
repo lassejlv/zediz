@@ -12,7 +12,10 @@ use crate::services::Resources;
 
 /// Default Hetzner image; cloud-init inside installs docker + agent.
 const DEFAULT_IMAGE: &str = "debian-12";
-const AGENT_RELEASE_URL_ENV: &str = "ZEDIZ_AGENT_RELEASE_URL";
+const AGENT_GIT_REPO_ENV: &str = "ZEDIZ_AGENT_GIT_REPO";
+const AGENT_GIT_REF_ENV: &str = "ZEDIZ_AGENT_GIT_REF";
+const DEFAULT_AGENT_GIT_REPO: &str = "https://github.com/lassejlv/zediz.git";
+const DEFAULT_AGENT_GIT_REF: &str = "main";
 
 /// Minimum headroom multiplier: provisioned node must fit 120% of need.
 const HEADROOM: f32 = 1.2;
@@ -99,13 +102,15 @@ pub async fn provision(
     let total_disk_mb = (st.disk * 1024) as i32;
 
     let name = format!("zediz-{}", &node_id.to_string()[..8]);
-    let agent_release_url = std::env::var(AGENT_RELEASE_URL_ENV).unwrap_or_else(|_| {
-        "https://github.com/lassevestergaard/zediz/releases/latest/download/zediz-agent".into()
-    });
+    let git_repo = std::env::var(AGENT_GIT_REPO_ENV)
+        .unwrap_or_else(|_| DEFAULT_AGENT_GIT_REPO.to_string());
+    let git_ref =
+        std::env::var(AGENT_GIT_REF_ENV).unwrap_or_else(|_| DEFAULT_AGENT_GIT_REF.to_string());
     let user_data = cloud_init::render(
         &config.public_url,
         &bootstrap,
-        &agent_release_url,
+        &git_repo,
+        &git_ref,
         &node_id.to_string(),
         workspace_id,
     );
@@ -187,22 +192,36 @@ pub async fn provision(
     })
 }
 
-/// Tear down a Hetzner node: delete from the cloud and mark terminated locally.
+/// Tear down a Hetzner node. Marks it terminated first (so the scheduler stops
+/// dispatching to it), then deletes the VM. On Hetzner success the row is
+/// removed entirely. On Hetzner failure the tombstone remains and the caller
+/// gets an error to retry.
 pub async fn terminate(
     pool: &PgPool,
     hetzner_token: &str,
     node_id: &str,
     hetzner_server_id: i64,
 ) -> Result<()> {
-    let client = HetznerClient::new(hetzner_token);
-    if let Err(e) = client.delete_server(hetzner_server_id).await {
-        tracing::warn!(error = ?e, server = hetzner_server_id, "hetzner delete_server failed");
-    }
+    // Stop scheduling to this node immediately.
     sqlx::query("UPDATE nodes SET status = 'terminated', node_token_hash = NULL WHERE id = $1")
         .bind(node_id)
         .execute(pool)
         .await?;
     sqlx::query("DELETE FROM node_allocations WHERE node_id = $1")
+        .bind(node_id)
+        .execute(pool)
+        .await?;
+
+    let client = HetznerClient::new(hetzner_token);
+    // delete_server returns Ok for 404 (already gone), so a real error here
+    // is worth surfacing — the VM may still exist and could bill.
+    client
+        .delete_server(hetzner_server_id)
+        .await
+        .map_err(|e| anyhow!("hetzner delete_server {hetzner_server_id}: {e}"))?;
+
+    // VM confirmed gone — drop the row.
+    sqlx::query("DELETE FROM nodes WHERE id = $1")
         .bind(node_id)
         .execute(pool)
         .await?;

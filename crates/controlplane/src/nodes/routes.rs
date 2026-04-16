@@ -150,10 +150,12 @@ async fn delete(
     struct Node {
         id: String,
         provider: String,
+        status: String,
         hetzner_server_id: Option<i64>,
     }
     let node: Option<Node> = sqlx::query_as(
-        "SELECT id, provider, hetzner_server_id FROM nodes WHERE id = $1 AND workspace_id = $2",
+        "SELECT id, provider, status, hetzner_server_id FROM nodes \
+         WHERE id = $1 AND workspace_id = $2",
     )
     .bind(&node_id)
     .bind(ctx.workspace_id.to_string())
@@ -172,7 +174,13 @@ async fn delete(
         )));
     }
 
-    if node.provider == "hetzner" {
+    // Only call Hetzner when there's actually a live VM to kill — skip if the
+    // row is already tombstoned as 'terminated' or there's no server id.
+    let should_call_hetzner = node.provider == "hetzner"
+        && node.status != "terminated"
+        && node.hetzner_server_id.is_some();
+
+    if should_call_hetzner {
         let token = credentials::first_hetzner_token(
             state.pool(),
             state.master_key(),
@@ -180,20 +188,17 @@ async fn delete(
         )
         .await
         .map_err(ApiError::Internal)?;
-        match (token, node.hetzner_server_id) {
-            (Some(token), Some(server_id)) => {
-                hetzner_provisioner::terminate(state.pool(), &token, &node.id, server_id)
-                    .await
-                    .map_err(ApiError::Internal)?;
-                pause_scheduler(state.pool(), &ctx.workspace_id.to_string()).await?;
-                return Ok(());
-            }
-            _ => {
-                // No credential or no server_id — just drop the row.
-            }
+        if let (Some(token), Some(server_id)) = (token, node.hetzner_server_id) {
+            hetzner_provisioner::terminate(state.pool(), &token, &node.id, server_id)
+                .await
+                .map_err(ApiError::Internal)?;
+            pause_scheduler(state.pool(), &ctx.workspace_id.to_string()).await?;
+            return Ok(());
         }
     }
 
+    // Already-terminated tombstone, or no credential to hit Hetzner with —
+    // just drop the row so the UI stays clean.
     sqlx::query("DELETE FROM nodes WHERE id = $1")
         .bind(&node.id)
         .execute(state.pool())
