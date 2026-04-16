@@ -19,7 +19,7 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/workspaces/:slug/projects/:project_slug/services/:service_slug/domains/:id",
-            axum::routing::delete(delete),
+            axum::routing::patch(update).delete(delete),
         )
 }
 
@@ -176,6 +176,56 @@ async fn create(
     .fetch_optional(state.pool())
     .await?;
     let row = inserted.ok_or_else(|| ApiError::Conflict("hostname already in use".into()))?;
+
+    crate::scheduler::push_routes_for_service(state.pool(), &service_id.to_string())
+        .await
+        .map_err(ApiError::Internal)?;
+
+    Ok(Json(DomainSummary::try_from(row)?))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateDomainRequest {
+    #[serde(default)]
+    pub container_port: Option<i32>,
+}
+
+async fn update(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((slug, project_slug, service_slug, id)): Path<(String, String, String, String)>,
+    Json(req): Json<UpdateDomainRequest>,
+) -> ApiResult<Json<DomainSummary>> {
+    let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
+    membership::require(&ctx, Role::Member)?;
+    let (service_id, _) = resolve_service(
+        state.pool(),
+        &ctx.workspace_id,
+        &project_slug,
+        &service_slug,
+    )
+    .await?;
+
+    if let Some(p) = req.container_port {
+        if !(1..=65535).contains(&p) {
+            return Err(ApiError::Validation("container_port out of range".into()));
+        }
+    }
+
+    let row: Option<DomainRow> = sqlx::query_as(
+        "UPDATE service_domains SET \
+            container_port = COALESCE($1, container_port), \
+            updated_at = now() \
+         WHERE id = $2 AND service_id = $3 \
+         RETURNING id, service_id, hostname, container_port, tls_status, \
+                   last_error, last_cert_at, created_at",
+    )
+    .bind(req.container_port)
+    .bind(&id)
+    .bind(service_id.to_string())
+    .fetch_optional(state.pool())
+    .await?;
+    let row = row.ok_or(ApiError::NotFound)?;
 
     crate::scheduler::push_routes_for_service(state.pool(), &service_id.to_string())
         .await

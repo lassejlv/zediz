@@ -1,11 +1,16 @@
 import { useQuery } from '@tanstack/react-query';
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { Copy } from 'lucide-react';
-import { useAddDomain, useDeleteDomain, domainsQuery } from '@/lib/domains';
+import {
+  useAddDomain,
+  useDeleteDomain,
+  useUpdateDomain,
+  domainsQuery,
+} from '@/lib/domains';
 import { nodesQuery } from '@/lib/nodes';
 import { ApiError } from '@/lib/api';
 import { Button, Card, ErrorText, Field, Input } from '@/components/ui';
-import type { TlsStatus } from '@/lib/types';
+import type { DomainSummary, TlsStatus } from '@/lib/types';
 
 const STATUS_COLOR: Record<TlsStatus, string> = {
   pending: 'text-yellow-400',
@@ -31,6 +36,7 @@ export function DomainsSection({
   const domains = useQuery(domainsQuery(workspaceSlug, projectSlug, serviceSlug));
   const add = useAddDomain(workspaceSlug, projectSlug, serviceSlug);
   const del = useDeleteDomain(workspaceSlug, projectSlug, serviceSlug);
+  const updateDomain = useUpdateDomain(workspaceSlug, projectSlug, serviceSlug);
   const nodes = useQuery(nodesQuery(workspaceSlug));
 
   const [hostname, setHostname] = useState('');
@@ -145,7 +151,18 @@ export function DomainsSection({
                       {d.hostname}
                     </a>
                   </td>
-                  <td className="px-4 py-2 font-mono text-xs">{d.container_port}</td>
+                  <td className="px-4 py-2">
+                    {canManage ? (
+                      <PortCell
+                        domain={d}
+                        onSave={(port) =>
+                          updateDomain.mutateAsync({ id: d.id, container_port: port })
+                        }
+                      />
+                    ) : (
+                      <span className="font-mono text-xs">{d.container_port}</span>
+                    )}
+                  </td>
                   <td className="px-4 py-2">
                     <span className={`font-mono text-xs ${STATUS_COLOR[d.tls_status]}`}>
                       {d.tls_status}
@@ -268,6 +285,103 @@ function CopyBtn({ value }: { value: string }) {
       ) : (
         <Copy className="h-3.5 w-3.5" />
       )}
+    </button>
+  );
+}
+
+function PortCell({
+  domain,
+  onSave,
+}: {
+  domain: DomainSummary;
+  onSave: (port: number) => Promise<DomainSummary>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(String(domain.container_port));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!editing) setValue(String(domain.container_port));
+  }, [domain.container_port, editing]);
+
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [editing]);
+
+  async function commit() {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 1 || n > 65535) {
+      setError(true);
+      return;
+    }
+    if (n === domain.container_port) {
+      setEditing(false);
+      setError(false);
+      return;
+    }
+    setSaving(true);
+    setError(false);
+    try {
+      await onSave(n);
+      setEditing(false);
+    } catch {
+      setError(true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function cancel() {
+    setValue(String(domain.container_port));
+    setEditing(false);
+    setError(false);
+  }
+
+  function onKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void commit();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      cancel();
+    }
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        type="number"
+        min={1}
+        max={65535}
+        value={value}
+        disabled={saving}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={() => void commit()}
+        onKeyDown={onKeyDown}
+        className={[
+          'h-7 w-20 rounded border bg-transparent px-2 font-mono text-xs focus:outline-none',
+          error
+            ? 'border-red-500/60 focus:border-red-500'
+            : 'border-[var(--color-border)] focus:border-[var(--color-accent)]',
+        ].join(' ')}
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setEditing(true)}
+      title="Click to edit"
+      className="rounded px-1 font-mono text-xs hover:bg-black/5 dark:hover:bg-white/5"
+    >
+      {domain.container_port}
     </button>
   );
 }

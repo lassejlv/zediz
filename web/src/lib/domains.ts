@@ -65,6 +65,37 @@ export function useAddDomain(
   });
 }
 
+export function useUpdateDomain(
+  workspaceSlug: string,
+  projectSlug: string,
+  serviceSlug: string,
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { id: string; container_port?: number }) =>
+      api<DomainSummary>(
+        `${base(workspaceSlug, projectSlug, serviceSlug)}/${encodeURIComponent(input.id)}`,
+        {
+          method: 'PATCH',
+          body: { container_port: input.container_port },
+        },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({
+        queryKey: [
+          'workspace',
+          workspaceSlug,
+          'project',
+          projectSlug,
+          'service',
+          serviceSlug,
+          'domains',
+        ],
+      });
+    },
+  });
+}
+
 export function useDeleteDomain(
   workspaceSlug: string,
   projectSlug: string,
