@@ -198,12 +198,11 @@ async fn delete(
     }
 
     // Already-terminated tombstone, or no credential to hit Hetzner with —
-    // just drop the row so the UI stays clean.
+    // just drop the row so the UI stays clean. No pause: no live VM was killed.
     sqlx::query("DELETE FROM nodes WHERE id = $1")
         .bind(&node.id)
         .execute(state.pool())
         .await?;
-    pause_scheduler(state.pool(), &ctx.workspace_id.to_string()).await?;
     Ok(())
 }
 

@@ -96,6 +96,19 @@ async fn restart(
         .execute(state.pool())
         .await?;
 
+    // Restart is an explicit "start over" intent — clear any scheduler pause
+    // left over from a node delete so provisioning can kick off immediately.
+    sqlx::query(
+        "UPDATE workspaces SET scheduler_paused_until = NULL \
+         WHERE id = (SELECT p.workspace_id FROM deployments d \
+                     JOIN services s ON s.id = d.service_id \
+                     JOIN projects p ON p.id = s.project_id \
+                     WHERE d.id = $1)",
+    )
+    .bind(&id)
+    .execute(state.pool())
+    .await?;
+
     crate::scheduler::nudge(&state);
 
     let updated = deployments::fetch_by_id(state.pool(), &id).await?;
