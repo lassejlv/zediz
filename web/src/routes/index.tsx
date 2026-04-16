@@ -1,35 +1,35 @@
-import { createFileRoute } from '@tanstack/react-router';
+import { createFileRoute, Link, redirect } from '@tanstack/react-router';
+import { meQuery } from '@/lib/auth';
+import { workspacesQuery } from '@/lib/workspaces';
+import { Button } from '@/components/ui';
 
 export const Route = createFileRoute('/')({
-  component: IndexPage,
+  beforeLoad: async ({ context }) => {
+    const me = await context.queryClient.ensureQueryData(meQuery);
+    if (!me) {
+      throw redirect({ to: '/login' });
+    }
+    const workspaces = await context.queryClient.ensureQueryData(workspacesQuery);
+    if (workspaces.length > 0) {
+      throw redirect({
+        to: '/w/$workspaceSlug',
+        params: { workspaceSlug: workspaces[0].slug },
+      });
+    }
+  },
+  component: EmptyState,
 });
 
-function IndexPage() {
+function EmptyState() {
   return (
-    <section className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-semibold tracking-tight">Welcome to Zediz</h1>
-        <p className="mt-2 text-sm text-[var(--color-muted)]">
-          Self-hosted PaaS on Hetzner. Phase 0 scaffold — nothing wired up yet.
-        </p>
-      </div>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        {[
-          { label: 'Projects', value: '—' },
-          { label: 'Services', value: '—' },
-          { label: 'Nodes', value: '—' },
-        ].map((c) => (
-          <div
-            key={c.label}
-            className="rounded-lg border border-[var(--color-border)] p-4"
-          >
-            <div className="text-xs uppercase tracking-wider text-[var(--color-muted)]">
-              {c.label}
-            </div>
-            <div className="mt-2 font-mono text-2xl">{c.value}</div>
-          </div>
-        ))}
-      </div>
+    <section className="mx-auto max-w-md space-y-4 pt-16 text-center">
+      <h1 className="text-2xl font-semibold tracking-tight">No workspaces yet</h1>
+      <p className="text-sm text-[var(--color-muted)]">
+        Create your first workspace to deploy services, invite teammates, and manage nodes.
+      </p>
+      <Link to="/workspaces/new">
+        <Button>Create workspace</Button>
+      </Link>
     </section>
   );
 }

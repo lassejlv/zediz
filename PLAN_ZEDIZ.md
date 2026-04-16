@@ -353,11 +353,11 @@ w/$workspaceSlug/
 - [x] Docker images for controlplane & agent; release workflow publishes agent binary to GitHub Releases
 
 ### Phase 1 — Auth & workspaces
-- [ ] Postgres schema + sqlx migrations for users, sessions, workspaces, members, invites
-- [ ] Signup, login, logout, me
-- [ ] Workspace CRUD, invite flow
-- [ ] RBAC middleware
-- [ ] Frontend: login/signup/invite pages, workspace switcher, member management
+- [x] Postgres schema + sqlx migrations for users, sessions, workspaces, members, invites
+- [x] Signup, login, logout, me
+- [x] Workspace CRUD, invite flow
+- [x] RBAC middleware
+- [x] Frontend: login/signup/invite pages, workspace switcher, member management
 
 ### Phase 2 — Credentials & SSH keys
 - [ ] AES-GCM crypto module with key loading
