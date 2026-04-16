@@ -162,7 +162,26 @@ impl Executor {
             )
             .await;
 
-        let container_id = self.docker.pull_and_run(spec).await?;
+        let container_id = match self.docker.pull_and_run(spec).await {
+            Ok(id) => id,
+            Err(e) => {
+                // Make the failure visible on the deployment row, not just on
+                // the agent_commands ack that the UI never shows.
+                let _ = self
+                    .client
+                    .report_status(
+                        &self.node_token,
+                        &deployment_id,
+                        &StatusBody {
+                            status: "errored".into(),
+                            container_id: None,
+                            reason: Some(e.to_string()),
+                        },
+                    )
+                    .await;
+                return Err(e);
+            }
+        };
 
         self.tracked.insert(deployment_id.clone());
         self.log_cursors.insert(deployment_id.clone(), 0);

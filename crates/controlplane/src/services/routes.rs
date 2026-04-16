@@ -346,6 +346,11 @@ async fn deploy(
         .clone()
         .ok_or_else(|| ApiError::Validation("service has no image_ref".into()))?;
 
+    // Replace any active deployments for this service — redeploy semantics.
+    // Tells the agent to stop the old container (freeing host ports, etc.) and
+    // flips the old row to `stopped` so the scheduler won't touch it again.
+    retire_active_deployments(state.pool(), &summary.id.to_string()).await?;
+
     let deployment =
         deployments::create_deployment(state.pool(), &summary, &image, &ctx.workspace_id).await?;
 
@@ -353,6 +358,44 @@ async fn deploy(
     crate::scheduler::nudge(&state);
 
     Ok(Json(deployment))
+}
+
+async fn retire_active_deployments(pool: &sqlx::PgPool, service_id: &str) -> ApiResult<()> {
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT id, node_id FROM deployments \
+         WHERE service_id = $1 \
+               AND status IN ('pending', 'placing', 'pulling', 'starting', 'running', 'failing')",
+    )
+    .bind(service_id)
+    .fetch_all(pool)
+    .await?;
+
+    for (deployment_id, node_id) in rows {
+        if let Some(node_id) = node_id {
+            // Best-effort — if the agent is down the row still gets marked stopped.
+            let _ = crate::agent::commands::enqueue(
+                pool,
+                &node_id,
+                Some(&deployment_id),
+                crate::agent::commands::CommandKind::Stop,
+                serde_json::json!({}),
+            )
+            .await;
+        }
+        sqlx::query(
+            "UPDATE deployments SET status = 'stopped', stopped_at = now(), \
+                                    reason = 'replaced by new deployment', updated_at = now() \
+             WHERE id = $1",
+        )
+        .bind(&deployment_id)
+        .execute(pool)
+        .await?;
+        sqlx::query("DELETE FROM node_allocations WHERE deployment_id = $1")
+            .bind(&deployment_id)
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
 }
 
 async fn list_deployments(
