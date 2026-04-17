@@ -83,6 +83,48 @@ export function useCreateService(workspaceSlug: string, projectSlug: string) {
   });
 }
 
+export interface UpdateServiceInput {
+  name?: string;
+  image_ref?: string;
+  env_vars?: EnvVars;
+  ports?: PortMap[];
+  resources?: Resources;
+  replicas?: number;
+  restart_policy?: RestartPolicy;
+  git_repo?: string;
+  git_branch?: string;
+  dockerfile_path?: string;
+  root_dir?: string;
+  builder?: 'dockerfile' | 'railpack';
+  registry_repo?: string;
+  github_credential_id?: string;
+  registry_credential_id?: string;
+}
+
+export function useUpdateService(
+  workspaceSlug: string,
+  projectSlug: string,
+  serviceSlug: string,
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UpdateServiceInput) =>
+      api<ServiceSummary>(
+        `${serviceBase(workspaceSlug, projectSlug)}/${encodeURIComponent(serviceSlug)}`,
+        { method: 'PATCH', body: input },
+      ),
+    onSuccess: (updated) => {
+      qc.setQueryData(
+        ['workspace', workspaceSlug, 'project', projectSlug, 'service', serviceSlug],
+        updated,
+      );
+      qc.invalidateQueries({
+        queryKey: ['workspace', workspaceSlug, 'project', projectSlug, 'services'],
+      });
+    },
+  });
+}
+
 export function useDeleteService(workspaceSlug: string, projectSlug: string) {
   const qc = useQueryClient();
   return useMutation({

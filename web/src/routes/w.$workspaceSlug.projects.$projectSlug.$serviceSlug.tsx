@@ -29,6 +29,7 @@ import {
   type SemanticStatus,
 } from '@/components/ui';
 import { DomainsSection } from '@/components/domains-section';
+import { ServiceSettingsTab } from '@/components/service-settings';
 import { buildsQuery, buildTone } from '@/lib/builds';
 import type { BuildSummary, DeploymentSummary, ServiceSummary } from '@/lib/types';
 
@@ -211,7 +212,14 @@ function ServicePage() {
         />
       ) : null}
 
-      {tab === 'settings' ? <SettingsTab service={svc} /> : null}
+      {tab === 'settings' && svc ? (
+        <ServiceSettingsTab
+          service={svc}
+          workspaceSlug={workspaceSlug}
+          projectSlug={projectSlug}
+          canManage={canDeploy}
+        />
+      ) : null}
     </Stack>
   );
 }
@@ -864,36 +872,3 @@ function shortDigest(digest: string): string {
 
 /* ---------- settings tab ---------- */
 
-function SettingsTab({ service }: { service: ServiceSummary | undefined }) {
-  if (!service) return null;
-  return (
-    <Stack gap={4}>
-      <Card className="p-5">
-        <div className="mb-3 text-[10px] font-medium uppercase tracking-wider text-[var(--color-muted)]">
-          Environment variables
-        </div>
-        {Object.keys(service.env_vars ?? {}).length === 0 ? (
-          <p className="text-sm text-[var(--color-muted)]">No environment variables set.</p>
-        ) : (
-          <dl className="space-y-1.5 text-xs">
-            {Object.entries(service.env_vars).map(([k, v]) => (
-              <div key={k} className="flex items-center justify-between gap-4 font-mono">
-                <dt>{k}</dt>
-                <dd className="truncate text-[var(--color-muted)]">{v}</dd>
-              </div>
-            ))}
-          </dl>
-        )}
-      </Card>
-      <Card className="p-5">
-        <div className="mb-2 text-[10px] font-medium uppercase tracking-wider text-[var(--color-muted)]">
-          Advanced
-        </div>
-        <p className="text-xs text-[var(--color-muted)]">
-          Delete the service from the header (trash icon). Env var editing and volume mounts
-          are coming soon.
-        </p>
-      </Card>
-    </Stack>
-  );
-}
