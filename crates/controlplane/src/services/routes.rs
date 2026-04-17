@@ -533,12 +533,17 @@ async fn deploy(
     let service = service.ok_or(ApiError::NotFound)?;
     let summary = ServiceSummary::try_from(service)?;
 
-    // Cancel any in-flight (not-yet-running) deploy/build for this service
-    // before starting a new one. The currently-running deployment (if any)
-    // keeps serving traffic until the new one reaches `running` — retired
-    // at that point by `deployments::retire_superseded_running` so the
-    // domain route never has a gap.
-    cancel_in_flight_deployments(state.pool(), &summary.id.to_string()).await?;
+    // Rolling cutover works when the old and new containers can coexist
+    // on the node: Caddy routes via the internal network by container
+    // name, so domain-only services don't conflict. But if the service
+    // publishes any host port (host_port set on a PortMap), both
+    // containers can't bind the same :port on 0.0.0.0 at once — Docker
+    // rejects the second start with "port is already allocated". Fall
+    // back to the pre-rolling flow for those services: retire the old
+    // running deployment now so the port frees up before the agent
+    // processes the new PullAndRun. Domain-only services keep rolling.
+    let uses_host_ports = summary.ports.iter().any(|p| p.host_port.is_some());
+    cancel_pre_deploy(state.pool(), &summary.id.to_string(), uses_host_ports).await?;
 
     let deployment = match summary.source.as_str() {
         "image" => {
@@ -585,17 +590,29 @@ async fn deploy(
     Ok(Json(deployment))
 }
 
-/// Cancel any in-flight deployments of a service that aren't yet serving
-/// traffic. Skips `running` on purpose — that row is the current live
-/// upstream and must stay until `deployments::retire_superseded_running`
-/// cuts over to the new one.
-async fn cancel_in_flight_deployments(pool: &sqlx::PgPool, service_id: &str) -> ApiResult<()> {
+/// Retire deployments that are about to be superseded by a new deploy.
+///
+/// `include_running=false` (the default flow for domain-routed services):
+/// skip the currently-running deployment so it keeps serving traffic
+/// until `deployments::retire_superseded_running` cuts over atomically.
+///
+/// `include_running=true` (services that publish a host port): retire
+/// the running deployment too so Docker can bind that port for the new
+/// container. Enqueued Stop runs before the new PullAndRun on the agent
+/// because commands are dispatched in `created_at` order.
+async fn cancel_pre_deploy(
+    pool: &sqlx::PgPool,
+    service_id: &str,
+    include_running: bool,
+) -> ApiResult<()> {
     let rows: Vec<(String, Option<String>)> = sqlx::query_as(
         "SELECT id, node_id FROM deployments \
          WHERE service_id = $1 \
-               AND status IN ('pending','building','placing','pulling','starting','failing')",
+           AND (status IN ('pending','building','placing','pulling','starting','failing') \
+                OR ($2 AND status = 'running'))",
     )
     .bind(service_id)
+    .bind(include_running)
     .fetch_all(pool)
     .await?;
 
