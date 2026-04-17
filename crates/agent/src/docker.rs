@@ -499,17 +499,21 @@ async fn ensure_volume_mounted(device_path: &str, host_path: &str) -> Result<()>
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
-    let status = tokio::process::Command::new("mount")
+    let out = tokio::process::Command::new("mount")
         .arg("-t")
         .arg("ext4")
         .arg(device_path)
         .arg(host_path)
-        .status()
+        .output()
         .await
         .with_context(|| format!("spawning mount {device_path} {host_path}"))?;
-    if !status.success() {
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
         return Err(anyhow!(
-            "mount {device_path} → {host_path} failed: {status}"
+            "mount {device_path} -> {host_path} failed ({}): {}",
+            out.status,
+            if stderr.is_empty() { stdout } else { stderr }
         ));
     }
     Ok(())

@@ -38,6 +38,14 @@ write_files:
       ExecStartPre=-/usr/bin/docker rm -f zediz-agent
       ExecStartPre=/usr/bin/docker pull {agent_image}
       ExecStartPre=/usr/bin/mkdir -p /var/lib/zediz/volumes
+      # rshared propagation requires the host parent to itself be a
+      # shared mount. Dirs under /var are private by default, so bind
+      # the volumes dir over itself and flip it shared before the agent
+      # container starts. Without this, mounts the agent makes inside
+      # its namespace don't propagate to the host, so Docker can't see
+      # the volume when binding it into a service container.
+      ExecStartPre=/usr/bin/mountpoint -q /var/lib/zediz/volumes || /usr/bin/mount --bind /var/lib/zediz/volumes /var/lib/zediz/volumes
+      ExecStartPre=/usr/bin/mount --make-rshared /var/lib/zediz/volumes
       ExecStart=/usr/bin/docker run --rm --name zediz-agent \
         --network host \
         --env-file /etc/zediz/agent.env \
