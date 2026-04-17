@@ -13,6 +13,10 @@ services:
       ZEDIZ_PUBLIC_URL: ${ZEDIZ_PUBLIC_URL:-https://zediz.dev}
       ZEDIZ_COOKIE_SECURE: "true"
       ZEDIZ_AGENT_IMAGE: ${ZEDIZ_AGENT_IMAGE:-ghcr.io/lassejlv/zediz-agent:latest}
+      # Bundled registry plumbing; empty disables the auth proxy + the
+      # credential-create `username = id` override.
+      ZEDIZ_REGISTRY_SITE: ${REGISTRY_SITE:-registry.zediz.dev}
+      ZEDIZ_REGISTRY_UPSTREAM: ${ZEDIZ_REGISTRY_UPSTREAM:-http://registry:5000}
       RUST_LOG: ${RUST_LOG:-info}
     expose:
       - "8080"
@@ -42,20 +46,18 @@ services:
     networks:
       - zediz
 
-  # Self-hosted Docker Registry for git-service build outputs. Basic auth via
-  # htpasswd — generate with:
-  #   docker run --rm httpd:2 htpasswd -Bbn <user> '<password>' > docker/registry-htpasswd
+  # Self-hosted Docker Registry for git-service build outputs. No auth on the
+  # registry itself — the service publishes no host ports and is only reachable
+  # from the `zediz` docker network. The control plane's registry_proxy module
+  # terminates auth (basic auth against the credentials table, with per-workspace
+  # path scoping) and then forwards the request here.
   registry:
     image: registry:2
     restart: unless-stopped
     environment:
-      REGISTRY_AUTH: htpasswd
-      REGISTRY_AUTH_HTPASSWD_REALM: zediz-registry
-      REGISTRY_AUTH_HTPASSWD_PATH: /auth/htpasswd
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
     volumes:
       - registry_data:/var/lib/registry
-      - ./docker/registry-htpasswd:/auth/htpasswd:ro
     networks:
       - zediz
 

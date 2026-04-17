@@ -20,11 +20,14 @@ mod error;
 mod nodes;
 mod projects;
 mod provisioner;
+mod registry_proxy;
 mod scheduler;
 mod services;
 mod ssh_keys;
 mod state;
 mod workspaces;
+
+use axum::extract::State;
 
 use crate::config::Config;
 use crate::state::AppState;
@@ -33,6 +36,14 @@ use crate::state::AppState;
 struct Health {
     status: &'static str,
     version: &'static str,
+}
+
+/// Non-secret subset of the config exposed to the frontend. Lets the UI show
+/// hints that depend on what's configured (e.g. "this credential targets the
+/// bundled registry") without hard-coding hostnames.
+#[derive(Serialize)]
+struct PublicSettings {
+    registry_site: Option<String>,
 }
 
 #[tokio::main]
@@ -73,6 +84,14 @@ fn router(state: AppState) -> Router {
                 })
             }),
         )
+        .route(
+            "/public-settings",
+            get(|State(state): State<AppState>| async move {
+                Json(PublicSettings {
+                    registry_site: state.config().registry_site.clone(),
+                })
+            }),
+        )
         .nest("/auth", auth::routes::router())
         .merge(workspaces::routes::router())
         .merge(workspaces::invites::router())
@@ -86,8 +105,13 @@ fn router(state: AppState) -> Router {
         .merge(domains::routes::router())
         .merge(agent::routes::router());
 
+    // The registry proxy is mounted at the root (not under /api/v1) because
+    // docker clients hit `<registry-host>/v2/...` verbatim and we can't
+    // change their URL shape. Caddy forwards `{$REGISTRY_SITE}/v2/*` straight
+    // to us with the path intact.
     Router::new()
         .nest("/api/v1", api)
+        .merge(registry_proxy::router())
         .layer(TraceLayer::new_for_http())
         .layer(
             CorsLayer::new()

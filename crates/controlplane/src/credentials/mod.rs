@@ -66,3 +66,36 @@ pub async fn fetch_decrypted(
         metadata,
     }))
 }
+
+/// Registry-proxy lookup: fetch + decrypt by id without knowing the workspace
+/// in advance. Returns the owning workspace id so the caller can check it
+/// against the URL path. The registry proxy uses this and then enforces the
+/// workspace-scope check itself.
+pub async fn fetch_for_proxy(
+    pool: &PgPool,
+    master_key: &MasterKey,
+    credential_id: &str,
+) -> Result<Option<(String, DecryptedCredential)>> {
+    let row: Option<(String, String, Vec<u8>, JsonValue)> = sqlx::query_as(
+        "SELECT workspace_id, kind, encrypted, metadata FROM credentials \
+         WHERE id = $1",
+    )
+    .bind(credential_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((workspace_id, kind, ct, metadata)) = row else {
+        return Ok(None);
+    };
+    let pt = master_key
+        .decrypt(&ct)
+        .with_context(|| format!("decrypting credential {credential_id}"))?;
+    let secret = String::from_utf8(pt).map_err(|e| anyhow!("credential not utf8: {e}"))?;
+    Ok(Some((
+        workspace_id,
+        DecryptedCredential {
+            kind,
+            secret,
+            metadata,
+        },
+    )))
+}

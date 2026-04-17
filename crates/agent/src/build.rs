@@ -99,25 +99,38 @@ async fn do_build(
         )
         .await?;
 
-    let clone_url = inject_pat(&spec.git_repo, spec.github_pat.as_deref())?;
-    run_logged(
-        client,
-        node_token,
-        &spec.deployment_id,
-        Command::new("git")
-            .args([
-                "clone",
-                "--depth",
-                "1",
-                "--branch",
-                &spec.git_branch,
-                &clone_url,
-                ".",
-            ])
-            .current_dir(work),
-        "git-clone",
-    )
-    .await?;
+    // Feed credentials to git via an inline helper reading a child-process
+    // env var — keeps the PAT out of argv, `.git/config`, and any progress
+    // stderr. `-c credential.helper=` first wipes inherited helpers so an
+    // on-disk system helper can't pre-empt ours.
+    let mut clone = Command::new("git");
+    clone
+        .arg("-c")
+        .arg("credential.helper=")
+        .arg("-c")
+        .arg(
+            r#"credential.helper=!f() { echo username=x-access-token; echo "password=$ZEDIZ_GIT_TOKEN"; }; f"#,
+        )
+        .args([
+            "clone",
+            "--depth",
+            "1",
+            "--quiet",
+            "--branch",
+            &spec.git_branch,
+            &spec.git_repo,
+            ".",
+        ])
+        .current_dir(work)
+        .env_remove("GIT_ASKPASS")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    if let Some(pat) = spec.github_pat.as_deref() {
+        if spec.git_repo.starts_with("http://") {
+            bail!("refusing to send PAT over plain http://");
+        }
+        clone.env("ZEDIZ_GIT_TOKEN", pat);
+    }
+    run_logged(client, node_token, &spec.deployment_id, &mut clone, "git-clone").await?;
 
     // Capture the commit sha for reporting. Fine to print the full sha; short
     // form is derivable client-side.
@@ -289,22 +302,6 @@ fn resolve_root_dir(clone_dir: &Path, root_dir: &str) -> Result<PathBuf> {
         }
     }
     Ok(out)
-}
-
-/// Rewrite `https://github.com/foo/bar.git` to `https://<pat>@github.com/foo/bar.git`
-/// when a PAT is supplied. Leaves other URL shapes untouched.
-fn inject_pat(url: &str, pat: Option<&str>) -> Result<String> {
-    let Some(pat) = pat else {
-        return Ok(url.to_string());
-    };
-    if let Some(rest) = url.strip_prefix("https://") {
-        Ok(format!("https://{pat}@{rest}"))
-    } else if url.starts_with("http://") {
-        Err(anyhow!("refusing to send PAT over plain http://"))
-    } else {
-        // SSH URLs etc. — caller is expected to have a deploy key elsewhere.
-        Ok(url.to_string())
-    }
 }
 
 async fn git_rev_parse(dir: &Path) -> Result<String> {

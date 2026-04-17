@@ -24,12 +24,14 @@
 	}
 }
 
-# Self-hosted Docker Registry fronted by Caddy so TLS is automatic. The
-# registry container enforces basic auth via htpasswd — Caddy just passes the
-# Authorization header through.
+# Self-hosted Docker Registry fronted by Caddy so TLS is automatic. Auth is
+# enforced by the control-plane auth proxy (see crates/controlplane/src/
+# registry_proxy), which validates Basic auth against the credentials table
+# and scopes access to the workspace id in the URL path before forwarding to
+# the registry container.
 {$REGISTRY_SITE:registry.zediz.dev} {
 	encode gzip zstd
-	reverse_proxy registry:5000 {
+	reverse_proxy controlplane:8080 {
 		flush_interval -1
 	}
 }

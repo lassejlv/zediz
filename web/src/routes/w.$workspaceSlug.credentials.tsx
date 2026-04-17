@@ -21,7 +21,9 @@ import {
   Stack,
   EmptyState,
   RelativeTime,
+  CopyableId,
 } from '@/components/ui';
+import { usePublicSettings } from '@/lib/settings';
 import {
   Sheet,
   SheetClose,
@@ -46,9 +48,11 @@ function CredentialsPage() {
   const { workspaceSlug } = Route.useParams();
   const workspace = useQuery(workspaceQuery(workspaceSlug));
   const creds = useQuery(credentialsQuery(workspaceSlug));
+  const settings = usePublicSettings();
   const del = useDeleteCredential(workspaceSlug);
 
   const canManage = canAdmin(workspace.data);
+  const bundledRegistryHost = settings.data?.registry_site ?? null;
 
   const [sheetOpen, setSheetOpen] = useState(false);
 
@@ -89,25 +93,39 @@ function CredentialsPage() {
               </tr>
             </thead>
             <tbody>
-              {creds.data.map((c) => (
-                <tr key={c.id} className="border-t border-[var(--color-border)]">
-                  <td className="px-4 py-2 font-mono text-xs">{KIND_LABEL[c.kind]}</td>
-                  <td className="px-4 py-2">{c.name}</td>
-                  <td className="px-4 py-2 text-xs text-[var(--color-muted)]">
-                    <RelativeTime date={c.created_at} />
-                  </td>
-                  <td className="px-4 py-2 text-right">
-                    <Button
-                      variant="danger"
-                      onClick={() => {
-                        if (confirm(`Delete ${c.name}?`)) del.mutate(c.id);
-                      }}
-                    >
-                      Delete
-                    </Button>
-                  </td>
-                </tr>
-              ))}
+              {creds.data.map((c) => {
+                const bundled =
+                  c.kind === 'registry' &&
+                  bundledRegistryHost !== null &&
+                  registryHostMatches(c.metadata, bundledRegistryHost);
+                return (
+                  <tr key={c.id} className="border-t border-[var(--color-border)]">
+                    <td className="px-4 py-2 font-mono text-xs">{KIND_LABEL[c.kind]}</td>
+                    <td className="px-4 py-2">
+                      <div>{c.name}</div>
+                      {bundled ? (
+                        <div className="mt-1 text-[11px] text-[var(--color-muted)]">
+                          <span>docker login user: </span>
+                          <CopyableId value={c.id} />
+                        </div>
+                      ) : null}
+                    </td>
+                    <td className="px-4 py-2 text-xs text-[var(--color-muted)]">
+                      <RelativeTime date={c.created_at} />
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      <Button
+                        variant="danger"
+                        onClick={() => {
+                          if (confirm(`Delete ${c.name}?`)) del.mutate(c.id);
+                        }}
+                      >
+                        Delete
+                      </Button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </Card>
@@ -130,6 +148,21 @@ function CredentialsPage() {
       />
     </Stack>
   );
+}
+
+/** True when a credential's `metadata.url` points at the bundled registry. */
+function registryHostMatches(
+  metadata: Record<string, unknown> | null | undefined,
+  bundledHost: string,
+): boolean {
+  const url = metadata && typeof metadata === 'object' ? (metadata as { url?: unknown }).url : null;
+  if (typeof url !== 'string') return false;
+  const host = url
+    .trim()
+    .replace(/^https?:\/\//, '')
+    .split('/')[0]
+    .toLowerCase();
+  return host === bundledHost.toLowerCase();
 }
 
 function AddCredentialSheet({

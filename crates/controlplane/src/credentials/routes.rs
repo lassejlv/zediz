@@ -150,9 +150,32 @@ async fn create(
         .map_err(ApiError::Internal)?;
 
     let id = Id::new();
-    let metadata = req
+    let mut metadata = req
         .metadata
         .unwrap_or_else(|| JsonValue::Object(Default::default()));
+
+    // For bundled-registry credentials, the docker-login username must match
+    // the credential id so the auth proxy (crates/controlplane/src/
+    // registry_proxy) can look it up without guessing. Overwrite any
+    // user-supplied username to avoid cross-workspace collision. External
+    // registries (GHCR, Docker Hub, user-hosted) keep the user's value.
+    if matches!(req.kind, CredentialKind::Registry) {
+        if let Some(bundled) = state.config().registry_site.as_deref() {
+            let is_bundled = metadata
+                .get("url")
+                .and_then(|v| v.as_str())
+                .map(|u| registry_host_matches(u, bundled))
+                .unwrap_or(false);
+            if is_bundled {
+                metadata
+                    .as_object_mut()
+                    .ok_or_else(|| {
+                        ApiError::Validation("metadata must be an object".into())
+                    })?
+                    .insert("username".into(), JsonValue::String(id.to_string()));
+            }
+        }
+    }
 
     let inserted: Option<CredentialRow> = sqlx::query_as(
         "INSERT INTO credentials (id, workspace_id, kind, name, encrypted, metadata, created_by) \
@@ -232,6 +255,21 @@ async fn rotate(
     .await?;
 
     Ok(Json(CredentialSummary::try_from(row)?))
+}
+
+/// True if `url` refers to the bundled registry — matches on hostname only
+/// so `https://registry.zediz.dev/ws/svc` and the bare `registry.zediz.dev`
+/// both count.
+fn registry_host_matches(url: &str, bundled_host: &str) -> bool {
+    let host = url
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
+    host == bundled_host.to_lowercase()
 }
 
 async fn delete(
