@@ -31,6 +31,7 @@ import {
 import { DomainsSection } from '@/components/domains-section';
 import { ServiceMetricsTab } from '@/components/service-metrics';
 import { ServiceSettingsTab } from '@/components/service-settings';
+import { ServiceVolumeTab } from '@/components/service-volume';
 import { buildsQuery, buildTone } from '@/lib/builds';
 import type { BuildSummary, DeploymentSummary, ServiceSummary } from '@/lib/types';
 
@@ -46,6 +47,7 @@ type Tab =
   | 'deployments'
   | 'builds'
   | 'domains'
+  | 'volume'
   | 'logs'
   | 'settings';
 
@@ -199,6 +201,15 @@ function ServicePage() {
         />
       ) : null}
 
+      {tab === 'volume' && svc ? (
+        <ServiceVolumeTab
+          service={svc}
+          workspaceSlug={workspaceSlug}
+          projectSlug={projectSlug}
+          canManage={canDeploy}
+        />
+      ) : null}
+
       {tab === 'domains' ? (
         <DomainsSection
           workspaceSlug={workspaceSlug}
@@ -343,6 +354,7 @@ function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
     { id: 'deployments', label: 'Deployments' },
     { id: 'builds', label: 'Builds' },
     { id: 'domains', label: 'Domains' },
+    { id: 'volume', label: 'Volume' },
     { id: 'logs', label: 'Logs' },
     { id: 'settings', label: 'Settings' },
   ];
@@ -417,7 +429,10 @@ function OverviewTab({
               label="Image"
               value={
                 service.image_ref ? (
-                  <CopyableId value={service.image_ref} />
+                  <CopyableId
+                    value={service.image_ref}
+                    display={truncateImage(service.image_ref)}
+                  />
                 ) : (
                   <span className="text-[var(--color-muted)]">—</span>
                 )
@@ -626,13 +641,34 @@ function DeploymentRow({
   );
 }
 
+/** Shrink a potentially very long image ref so it fits in a card row.
+ * Keeps the registry host + the digest/tag prefix so you can tell
+ * workspace / version at a glance; the full value is still in the DOM
+ * for CopyableId to copy. */
 function truncateImage(ref: string): string {
   if (ref.length <= 40) return ref;
+
+  const host = ref.split('/')[0];
+
+  // <host>/<path>@<digest> — digest is the useful tail
   const at = ref.indexOf('@');
-  if (at === -1) return ref.slice(0, 37) + '…';
-  const prefix = ref.slice(0, at);
-  const digest = ref.slice(at + 1);
-  return `${prefix}@${digest.slice(0, 12)}…`;
+  if (at !== -1) {
+    const digest = ref.slice(at + 1);
+    return `${host}/…@${digest.slice(0, 12)}…`;
+  }
+
+  // <host>/<path>:<tag> — tag is the useful tail. lastIndexOf because
+  // the port in <host> (if any) also uses ':'. Guard: a ':' that's
+  // still inside the path (before the final '/') is not the tag.
+  const colon = ref.lastIndexOf(':');
+  const slash = ref.lastIndexOf('/');
+  if (colon > slash && colon !== -1) {
+    const tag = ref.slice(colon + 1);
+    const shownTag = tag.length > 24 ? `${tag.slice(0, 24)}…` : tag;
+    return `${host}/…:${shownTag}`;
+  }
+
+  return ref.slice(0, 37) + '…';
 }
 
 function truncate(s: string, max: number): string {
