@@ -5,27 +5,19 @@ import { Plus, ArrowLeft } from 'lucide-react';
 import { NewServiceSheet } from '@/components/new-service-sheet';
 import { Button, EmptyState } from '@/components/ui';
 import { projectQuery } from '@/lib/projects';
-import { servicesQuery, serviceDeploymentsQuery, useDeployService } from '@/lib/services';
+import { servicesQuery, serviceDeploymentsQuery } from '@/lib/services';
 import { workspaceQuery } from '@/lib/workspaces';
 import { domainsQuery } from '@/lib/domains';
 import { BoardToolbar } from '@/components/board/board-toolbar';
-import { BoardCanvas } from '@/components/board/board-canvas';
-import { BoardInspector } from '@/components/board/board-inspector';
-import type { ServiceNodeState } from '@/components/board/service-node';
-import { useBoardPositions } from '@/lib/board-positions';
+import { ServiceNode, type ServiceNodeState } from '@/components/board/service-node';
 import type { DeploymentSummary, DomainSummary } from '@/lib/types';
 
 export const Route = createFileRoute('/w/$workspaceSlug/projects/$projectSlug/')({
   component: ProjectBoard,
-  validateSearch: (search): { selected?: string } => ({
-    selected: typeof search.selected === 'string' ? search.selected : undefined,
-  }),
 });
 
 function ProjectBoard() {
   const { workspaceSlug, projectSlug } = Route.useParams();
-  const { selected } = Route.useSearch();
-  const navigate = Route.useNavigate();
 
   const workspace = useQuery(workspaceQuery(workspaceSlug));
   const project = useQuery(projectQuery(workspaceSlug, projectSlug));
@@ -76,25 +68,9 @@ function ProjectBoard() {
   }, [nodes]);
 
   const canCreate = workspace.data ? workspace.data.role !== 'viewer' : false;
-  const canDeploy = canCreate;
-
-  const { positions, setPosition, clear, hasCustomLayout } = useBoardPositions(
-    workspaceSlug,
-    projectSlug,
-  );
-
-  const selectedNode = selected ? nodes.find((n) => n.service.slug === selected) ?? null : null;
-  const setSelected = (slug: string | null) => {
-    navigate({
-      search: (prev) => ({ ...prev, selected: slug ?? undefined }),
-      replace: true,
-    });
-  };
-
-  const deploy = useDeployService(workspaceSlug, projectSlug, selectedNode?.service.slug ?? '');
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-6">
       <div>
         <div className="mb-3 flex items-center gap-1 text-xs text-[var(--color-muted)]">
           <Link
@@ -111,64 +87,46 @@ function ProjectBoard() {
           summary={summary}
           canCreate={canCreate}
           createTrigger={
-            <div className="flex items-center gap-2">
-              {hasCustomLayout ? (
-                <Button variant="secondary" onClick={clear}>
-                  Reset layout
+            canCreate ? (
+              <NewServiceSheet workspaceSlug={workspaceSlug} projectSlug={projectSlug}>
+                <Button>
+                  <Plus className="mr-1 h-3.5 w-3.5" /> Add service
                 </Button>
-              ) : null}
-              {canCreate ? (
-                <NewServiceSheet workspaceSlug={workspaceSlug} projectSlug={projectSlug}>
-                  <Button>
-                    <Plus className="mr-1 h-3.5 w-3.5" /> Add service
-                  </Button>
-                </NewServiceSheet>
-              ) : null}
-            </div>
+              </NewServiceSheet>
+            ) : null
           }
         />
       </div>
 
-      <div className="flex min-h-[480px] gap-0 overflow-hidden rounded-lg border border-[var(--color-border)]">
-        <div className="min-w-0 flex-1 overflow-auto">
-          <BoardCanvas
-            nodes={nodes}
-            selectedSlug={selected ?? null}
-            onSelect={setSelected}
-            positions={positions}
-            onPositionChange={setPosition}
-            hasCustomLayout={hasCustomLayout}
-            empty={
-              <EmptyState
-                title="No services yet"
-                body="A service runs a container in this project. Add one to deploy."
-                cta={
-                  canCreate ? (
-                    <NewServiceSheet workspaceSlug={workspaceSlug} projectSlug={projectSlug}>
-                      <Button>
-                        <Plus className="mr-1 h-3.5 w-3.5" /> Add service
-                      </Button>
-                    </NewServiceSheet>
-                  ) : null
-                }
-              />
-            }
-          />
-        </div>
-        {selectedNode ? (
-          <div className="sticky top-20 h-[calc(100vh-8rem)]">
-            <BoardInspector
-              state={selectedNode}
+      {nodes.length === 0 ? (
+        <EmptyState
+          title="No services yet"
+          body="A service runs a container in this project. Add one to deploy."
+          cta={
+            canCreate ? (
+              <NewServiceSheet workspaceSlug={workspaceSlug} projectSlug={projectSlug}>
+                <Button>
+                  <Plus className="mr-1 h-3.5 w-3.5" /> Add service
+                </Button>
+              </NewServiceSheet>
+            ) : null
+          }
+        />
+      ) : (
+        <div
+          className="grid gap-4"
+          style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}
+        >
+          {nodes.map((node) => (
+            <ServiceNode
+              key={node.service.id}
+              state={node}
               workspaceSlug={workspaceSlug}
               projectSlug={projectSlug}
-              canDeploy={canDeploy}
-              onClose={() => setSelected(null)}
-              onDeploy={() => deploy.mutate()}
-              deployPending={deploy.isPending}
             />
-          </div>
-        ) : null}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

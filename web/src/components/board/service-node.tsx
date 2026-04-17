@@ -1,3 +1,4 @@
+import { Link } from '@tanstack/react-router';
 import type { ServiceSummary, DeploymentSummary } from '@/lib/types';
 import { RelativeTime, StatusPill, type SemanticStatus } from '@/components/ui';
 
@@ -61,21 +62,22 @@ function deploymentStatus(d: DeploymentSummary | undefined): {
 
 interface Props {
   state: ServiceNodeState;
-  selected?: boolean;
+  workspaceSlug: string;
+  projectSlug: string;
 }
 
-export function ServiceNode({ state, selected }: Props) {
+export function ServiceNode({ state, workspaceSlug, projectSlug }: Props) {
   const { service, latestDeployment, primaryDomain } = state;
   const status = deploymentStatus(latestDeployment);
   const primaryPort = service.ports[0]?.container_port;
 
   return (
-    <div
+    <Link
+      to="/w/$workspaceSlug/projects/$projectSlug/$serviceSlug"
+      params={{ workspaceSlug, projectSlug, serviceSlug: service.slug }}
       className={[
-        'group relative flex h-full w-full cursor-grab flex-col justify-between rounded-lg border bg-[var(--color-surface)] px-4 py-3 text-left transition-colors active:cursor-grabbing',
-        selected
-          ? 'border-[var(--color-accent)] ring-1 ring-[var(--color-accent)]/30'
-          : 'border-[var(--color-border)] hover:border-[var(--color-border-strong)]',
+        'group relative flex h-[120px] flex-col justify-between rounded-lg border bg-[var(--color-surface)] px-4 py-3 text-left transition-colors',
+        'border-[var(--color-border)] hover:border-[var(--color-border-strong)]',
         'border-l-4',
         status.borderClass || 'border-l-[var(--color-border)]',
       ].join(' ')}
@@ -123,6 +125,6 @@ export function ServiceNode({ state, selected }: Props) {
           )}
         </span>
       </div>
-    </div>
+    </Link>
   );
 }
