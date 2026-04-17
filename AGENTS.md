@@ -7,6 +7,7 @@
 - SEARCH, SEARCH
 - Listen TO ME when i tell you to do something!!
 - Use mcp for context7 if its there and not the cli, only if the mcp is not available
+- Dont push chages without asking first. 
 
 ## Architecture Overview
 Zediz is a Hetzner-first PaaS with one Rust control plane, one Rust node agent, and a Bun/Vite web client. The control plane serves `/api/v1`, runs SQLx migrations on startup, builds shared `AppState`, and starts the background scheduler. The main resource chain is `workspace -> project -> service -> deployment`; workspaces also own members, invites, credentials, SSH keys, nodes, and service domains. Deploys are control-plane driven: creating a deploy marks a deployment `pending`, the scheduler picks capacity or provisions a Hetzner node, then the agent pulls commands via heartbeat and performs Docker/Caddy work locally.
