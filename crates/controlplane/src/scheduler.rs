@@ -45,9 +45,16 @@ pub fn spawn(state: AppState) -> SchedulerHandle {
     tokio::spawn(async move {
         let tick = Duration::from_secs(2);
         let mut autoscale_counter: u32 = 0;
+        let mut tls_probe_counter: u32 = 0;
         loop {
             if let Err(e) = tick_once(&state_for_task).await {
                 tracing::error!(error = ?e, "scheduler tick failed");
+            }
+            tls_probe_counter = tls_probe_counter.wrapping_add(1);
+            if tls_probe_counter.is_multiple_of(5) {
+                if let Err(e) = crate::domains::refresh_tls_statuses(state_for_task.pool()).await {
+                    tracing::warn!(error = ?e, "tls status refresh failed");
+                }
             }
             // Run autoscale-down every ~30 ticks (~60 seconds).
             autoscale_counter = autoscale_counter.wrapping_add(1);

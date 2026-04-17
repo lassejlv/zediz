@@ -7,6 +7,7 @@ import {
   useUpdateDomain,
   domainsQuery,
 } from '@/lib/domains';
+import { serviceDeploymentsQuery } from '@/lib/services';
 import { nodesQuery } from '@/lib/nodes';
 import { ApiError } from '@/lib/api';
 import { Button, Card, ErrorText, Field, Input } from '@/components/ui';
@@ -38,15 +39,19 @@ export function DomainsSection({
   const del = useDeleteDomain(workspaceSlug, projectSlug, serviceSlug);
   const updateDomain = useUpdateDomain(workspaceSlug, projectSlug, serviceSlug);
   const nodes = useQuery(nodesQuery(workspaceSlug));
+  const deployments = useQuery(serviceDeploymentsQuery(workspaceSlug, projectSlug, serviceSlug));
 
   const [hostname, setHostname] = useState('');
   const [port, setPort] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  const readyNode = nodes.data?.find(
-    (n) => n.provider === 'hetzner' && n.status === 'ready' && n.public_ipv4,
+  const routedDeployment = deployments.data?.find(
+    (d) =>
+      d.node_id &&
+      !['stopped', 'errored'].includes(d.status),
   );
-  const nodeIp = readyNode?.public_ipv4 ?? null;
+  const routeNode = nodes.data?.find((n) => n.id === routedDeployment?.node_id);
+  const nodeIp = routeNode?.public_ipv4 ?? null;
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -164,9 +169,16 @@ export function DomainsSection({
                     )}
                   </td>
                   <td className="px-4 py-2">
-                    <span className={`font-mono text-xs ${STATUS_COLOR[d.tls_status]}`}>
-                      {d.tls_status}
-                    </span>
+                    <div>
+                      <span className={`font-mono text-xs ${STATUS_COLOR[d.tls_status]}`}>
+                        {d.tls_status}
+                      </span>
+                      {d.last_error ? (
+                        <div className="mt-1 max-w-[28rem] text-xs text-[var(--color-muted)]">
+                          {d.last_error}
+                        </div>
+                      ) : null}
+                    </div>
                   </td>
                   <td className="px-4 py-2 text-[var(--color-muted)]">
                     {new Date(d.created_at).toLocaleDateString()}
@@ -251,15 +263,16 @@ function DnsGuide({ hostname, nodeIp }: { hostname: string; nodeIp: string | nul
           <span className="font-mono">
             https://{hostname || '<hostname>'}
           </span>
-          . Caddy on the node issues a Let&apos;s Encrypt cert on the first HTTPS hit; TLS
-          status flips from <span className="font-mono">pending</span> to{' '}
-          <span className="font-mono">active</span> within a few seconds.
+          . Caddy on the service node issues the certificate on first HTTPS traffic. The
+          control plane then probes the hostname and updates TLS from{' '}
+          <span className="font-mono">pending</span> to{' '}
+          <span className="font-mono">active</span> once HTTPS succeeds.
         </li>
       </ol>
       {!nodeIp ? (
         <p className="mt-3 text-xs text-yellow-400">
-          No ready Hetzner node found in this workspace yet — provision one before DNS
-          propagates.
+          No routed node IP is available yet. Deploy the service first and wait for a node
+          assignment before pointing DNS at it.
         </p>
       ) : null}
     </div>
