@@ -35,8 +35,7 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-const SERVICE_COLUMNS: &str =
-    "id, slug, name, source, image_ref, env_vars, ports, resources, \
+const SERVICE_COLUMNS: &str = "id, slug, name, source, image_ref, env_vars, ports, resources, \
      replicas, restart_policy, git_repo, git_branch, git_commit, \
      dockerfile_path, root_dir, builder, registry_repo, \
      github_credential_id, registry_credential_id, created_at, updated_at";
@@ -245,12 +244,23 @@ async fn create(
 
     let source = req.source.as_deref().unwrap_or("image");
     if !matches!(source, "image" | "git") {
-        return Err(ApiError::Validation("source must be 'image' or 'git'".into()));
+        return Err(ApiError::Validation(
+            "source must be 'image' or 'git'".into(),
+        ));
     }
 
     // Branch on source to pick which fields are required and which are rejected.
-    let (image_ref, git_repo, git_branch, dockerfile_path, root_dir, builder, registry_repo,
-         github_credential_id, registry_credential_id);
+    let (
+        image_ref,
+        git_repo,
+        git_branch,
+        dockerfile_path,
+        root_dir,
+        builder,
+        registry_repo,
+        github_credential_id,
+        registry_credential_id,
+    );
     match source {
         "image" => {
             let img = trim_opt(req.image_ref)
@@ -284,11 +294,7 @@ async fn create(
                     .ok_or_else(|| ApiError::Validation("git_repo is required".into()))?,
             );
             git_branch = Some(trim_opt(req.git_branch).unwrap_or_else(|| "main".into()));
-            let chosen_builder = req
-                .builder
-                .as_deref()
-                .unwrap_or("dockerfile")
-                .to_string();
+            let chosen_builder = req.builder.as_deref().unwrap_or("dockerfile").to_string();
             if !matches!(chosen_builder.as_str(), "dockerfile" | "railpack") {
                 return Err(ApiError::Validation(
                     "builder must be 'dockerfile' or 'railpack'".into(),
@@ -527,14 +533,19 @@ async fn deploy(
     let service = service.ok_or(ApiError::NotFound)?;
     let summary = ServiceSummary::try_from(service)?;
 
-    // Cancel any in-flight deploy/build for this service before starting a new one.
-    retire_active_deployments(state.pool(), &summary.id.to_string()).await?;
+    // Cancel any in-flight (not-yet-running) deploy/build for this service
+    // before starting a new one. The currently-running deployment (if any)
+    // keeps serving traffic until the new one reaches `running` — retired
+    // at that point by `deployments::retire_superseded_running` so the
+    // domain route never has a gap.
+    cancel_in_flight_deployments(state.pool(), &summary.id.to_string()).await?;
 
     let deployment = match summary.source.as_str() {
         "image" => {
-            let image = summary.image_ref.clone().ok_or_else(|| {
-                ApiError::Validation("service has no image_ref".into())
-            })?;
+            let image = summary
+                .image_ref
+                .clone()
+                .ok_or_else(|| ApiError::Validation("service has no image_ref".into()))?;
             deployments::create_deployment(state.pool(), &summary, &image, &ctx.workspace_id)
                 .await?
         }
@@ -574,11 +585,15 @@ async fn deploy(
     Ok(Json(deployment))
 }
 
-async fn retire_active_deployments(pool: &sqlx::PgPool, service_id: &str) -> ApiResult<()> {
+/// Cancel any in-flight deployments of a service that aren't yet serving
+/// traffic. Skips `running` on purpose — that row is the current live
+/// upstream and must stay until `deployments::retire_superseded_running`
+/// cuts over to the new one.
+async fn cancel_in_flight_deployments(pool: &sqlx::PgPool, service_id: &str) -> ApiResult<()> {
     let rows: Vec<(String, Option<String>)> = sqlx::query_as(
         "SELECT id, node_id FROM deployments \
          WHERE service_id = $1 \
-               AND status IN ('pending','building','placing','pulling','starting','running','failing')",
+               AND status IN ('pending','building','placing','pulling','starting','failing')",
     )
     .bind(service_id)
     .fetch_all(pool)

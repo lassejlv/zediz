@@ -77,11 +77,7 @@ impl TryFrom<BuildRow> for BuildSummary {
 }
 
 /// Insert a `queued` build row for `service_id` + `deployment_id` and return its id.
-pub async fn create_queued(
-    pool: &PgPool,
-    service_id: &str,
-    deployment_id: &str,
-) -> ApiResult<Id> {
+pub async fn create_queued(pool: &PgPool, service_id: &str, deployment_id: &str) -> ApiResult<Id> {
     let id = Id::new();
     sqlx::query(
         "INSERT INTO builds (id, service_id, deployment_id, status) \

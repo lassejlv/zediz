@@ -7,6 +7,7 @@ use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use futures::Stream;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::convert::Infallible;
 use std::time::Duration;
 
@@ -228,7 +229,7 @@ async fn deployment_status(
     }
 
     let row: Option<(String,)> = sqlx::query_as(
-        "SELECT d.id FROM deployments d \
+        "SELECT d.service_id FROM deployments d \
          JOIN services s ON s.id = d.service_id \
          JOIN projects p ON p.id = s.project_id \
          WHERE d.id = $1 AND (d.node_id = $2 OR p.workspace_id = $3)",
@@ -238,7 +239,7 @@ async fn deployment_status(
     .bind(&claims.workspace_id)
     .fetch_optional(state.pool())
     .await?;
-    row.ok_or(ApiError::NotFound)?;
+    let service_id = row.ok_or(ApiError::NotFound)?.0;
 
     let started_at = if update.status == "running" {
         Some(Utc::now())
@@ -279,15 +280,39 @@ async fn deployment_status(
             .await?;
     }
 
-    // Any status change on a deployment might alter which hostnames this node
-    // should serve. Recompute + push the route set.
+    // Any status change on a deployment might alter which hostnames this
+    // node should serve. On `running` we also retire the previous running
+    // deployment (if any) of the same service — that is the moment of
+    // cut-over, and waiting until now keeps the old upstream live for the
+    // whole image-pull window so Caddy never sees an empty route set.
+    let mut affected_nodes: BTreeSet<String> = BTreeSet::new();
+    if update.status == "running" {
+        match crate::deployments::retire_superseded_running(
+            state.pool(),
+            &service_id,
+            &deployment_id,
+        )
+        .await
+        {
+            Ok(nodes) => affected_nodes.extend(nodes),
+            Err(e) => {
+                tracing::warn!(
+                    error = ?e,
+                    service = %service_id,
+                    "retire_superseded_running",
+                );
+            }
+        }
+    }
     if matches!(
         update.status.as_str(),
         "running" | "stopped" | "errored" | "failing"
     ) {
-        if let Err(e) = crate::scheduler::push_routes_for_node(state.pool(), &claims.node_id).await
-        {
-            tracing::warn!(error = ?e, node = %claims.node_id, "push_routes_for_node");
+        affected_nodes.insert(claims.node_id.clone());
+    }
+    for node_id in affected_nodes {
+        if let Err(e) = crate::scheduler::push_routes_for_node(state.pool(), &node_id).await {
+            tracing::warn!(error = ?e, node = %node_id, "push_routes_for_node");
         }
     }
 
@@ -487,15 +512,20 @@ async fn build_status(
 
     match update.status.as_str() {
         "succeeded" => {
-            let image_tag = update.image_tag.or(build.image_tag.clone()).ok_or_else(|| {
-                ApiError::Validation("succeeded build must include image_tag".into())
-            })?;
+            let image_tag = update
+                .image_tag
+                .or(build.image_tag.clone())
+                .ok_or_else(|| {
+                    ApiError::Validation("succeeded build must include image_tag".into())
+                })?;
             if let Some(commit) = update.git_commit.as_deref() {
-                sqlx::query("UPDATE services SET git_commit = $1, updated_at = now() WHERE id = $2")
-                    .bind(commit)
-                    .bind(&build.service_id)
-                    .execute(state.pool())
-                    .await?;
+                sqlx::query(
+                    "UPDATE services SET git_commit = $1, updated_at = now() WHERE id = $2",
+                )
+                .bind(commit)
+                .bind(&build.service_id)
+                .execute(state.pool())
+                .await?;
             }
             sqlx::query("UPDATE services SET image_ref = $1, updated_at = now() WHERE id = $2")
                 .bind(&image_tag)
@@ -519,9 +549,7 @@ async fn build_status(
             crate::scheduler::nudge(&state);
         }
         "failed" => {
-            let reason = update
-                .reason
-                .unwrap_or_else(|| "build failed".to_string());
+            let reason = update.reason.unwrap_or_else(|| "build failed".to_string());
             sqlx::query(
                 "UPDATE deployments SET status = 'errored', reason = $1, \
                                         stopped_at = now(), updated_at = now() \

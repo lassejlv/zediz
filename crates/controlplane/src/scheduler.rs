@@ -211,14 +211,10 @@ async fn dispatch_build(state: &AppState, b: QueuedBuild) -> Result<()> {
 
     let github_pat = match &b.github_credential_id {
         Some(id) => {
-            let cred = credentials::fetch_decrypted(
-                state.pool(),
-                state.master_key(),
-                &b.workspace_id,
-                id,
-            )
-            .await?
-            .ok_or_else(|| anyhow!("github credential {id} not found"))?;
+            let cred =
+                credentials::fetch_decrypted(state.pool(), state.master_key(), &b.workspace_id, id)
+                    .await?
+                    .ok_or_else(|| anyhow!("github credential {id} not found"))?;
             if cred.kind != "github_pat" {
                 return Err(anyhow!("credential {id} is not a github_pat"));
             }
@@ -539,12 +535,11 @@ async fn pick_preferred_node_for_domains(
     workspace_id: &str,
     need: &Resources,
 ) -> Result<Option<NodeCapacity>> {
-    let has_domains: Option<(bool,)> = sqlx::query_as(
-        "SELECT EXISTS(SELECT 1 FROM service_domains WHERE service_id = $1)",
-    )
-    .bind(service_id)
-    .fetch_optional(pool)
-    .await?;
+    let has_domains: Option<(bool,)> =
+        sqlx::query_as("SELECT EXISTS(SELECT 1 FROM service_domains WHERE service_id = $1)")
+            .bind(service_id)
+            .fetch_optional(pool)
+            .await?;
     if !has_domains.map(|(v,)| v).unwrap_or(false) {
         return Ok(None);
     }
@@ -668,15 +663,10 @@ async fn dispatch_to_agent(state: &AppState, node_id: &str, p: &PendingDeploymen
     // the deployment than to ship a broken command.
     let registry_cred = match &p.registry_credential_id {
         Some(id) => Some(
-            credentials::fetch_decrypted(
-                state.pool(),
-                state.master_key(),
-                &p.workspace_id,
-                id,
-            )
-            .await
-            .context("fetching registry credential for pull")?
-            .ok_or_else(|| anyhow!("registry credential {id} missing"))?,
+            credentials::fetch_decrypted(state.pool(), state.master_key(), &p.workspace_id, id)
+                .await
+                .context("fetching registry credential for pull")?
+                .ok_or_else(|| anyhow!("registry credential {id} missing"))?,
         ),
         None => None,
     };

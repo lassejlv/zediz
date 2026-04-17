@@ -129,6 +129,58 @@ pub async fn fetch_by_id(pool: &PgPool, deployment_id: &str) -> ApiResult<Deploy
     row.ok_or(ApiError::NotFound)
 }
 
+/// Retire any still-`running` deployments of this service that aren't `winner`.
+/// For each: enqueue a Stop to its node, mark the row `stopped`, release its
+/// allocation. Returns the node IDs whose route set may have changed.
+///
+/// This is what makes a redeploy rolling: the old container keeps serving
+/// traffic until the new one reaches `running`; only then do we cut over.
+pub async fn retire_superseded_running(
+    pool: &PgPool,
+    service_id: &str,
+    winner_deployment_id: &str,
+) -> ApiResult<Vec<String>> {
+    use crate::agent::commands::{self, CommandKind};
+    use std::collections::BTreeSet;
+
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT id, node_id FROM deployments \
+         WHERE service_id = $1 AND status = 'running' AND id <> $2",
+    )
+    .bind(service_id)
+    .bind(winner_deployment_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut nodes: BTreeSet<String> = BTreeSet::new();
+    for (deployment_id, node_id) in rows {
+        if let Some(ref node_id) = node_id {
+            let _ = commands::enqueue(
+                pool,
+                node_id,
+                Some(&deployment_id),
+                CommandKind::Stop,
+                json!({}),
+            )
+            .await;
+            nodes.insert(node_id.clone());
+        }
+        sqlx::query(
+            "UPDATE deployments SET status = 'stopped', stopped_at = now(), \
+                                    reason = 'replaced by new deployment', updated_at = now() \
+             WHERE id = $1",
+        )
+        .bind(&deployment_id)
+        .execute(pool)
+        .await?;
+        sqlx::query("DELETE FROM node_allocations WHERE deployment_id = $1")
+            .bind(&deployment_id)
+            .execute(pool)
+            .await?;
+    }
+    Ok(nodes.into_iter().collect())
+}
+
 /// Resolve `(workspace_id, service_id, project_id)` for a deployment, enforcing the
 /// caller is at least a viewer in the owning workspace.
 pub async fn authorize(

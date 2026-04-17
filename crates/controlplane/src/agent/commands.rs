@@ -128,9 +128,8 @@ pub fn pull_and_run_payload(
     memory_mb: u32,
     registry: Option<&RegistryAuth<'_>>,
 ) -> JsonValue {
-    let registry = registry.map(|r| {
-        json!({ "url": r.url, "username": r.username, "password": r.password })
-    });
+    let registry =
+        registry.map(|r| json!({ "url": r.url, "username": r.username, "password": r.password }));
     json!({
         "image": image,
         "env": env,
@@ -163,9 +162,10 @@ pub struct RegistryAuth<'a> {
 }
 
 pub fn build_payload(p: &BuildPayload<'_>) -> JsonValue {
-    let registry = p.registry.as_ref().map(|r| {
-        json!({ "url": r.url, "username": r.username, "password": r.password })
-    });
+    let registry = p
+        .registry
+        .as_ref()
+        .map(|r| json!({ "url": r.url, "username": r.username, "password": r.password }));
     json!({
         "build_id": p.build_id,
         "deployment_id": p.deployment_id,

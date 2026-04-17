@@ -70,15 +70,20 @@ async fn handle(State(state): State<AppState>, req: Request) -> Response {
         None => return unauthorized(),
     };
 
-    let (creds_workspace_id, cred) =
-        match credentials::fetch_for_proxy(state.pool(), state.master_key(), &basic.user).await {
-            Ok(Some(v)) => v,
-            Ok(None) => return unauthorized(),
-            Err(e) => {
-                tracing::warn!(error = ?e, user = %basic.user, "registry proxy credential lookup failed");
-                return unauthorized();
-            }
-        };
+    let (creds_workspace_id, cred) = match credentials::fetch_for_proxy(
+        state.pool(),
+        state.master_key(),
+        &basic.user,
+    )
+    .await
+    {
+        Ok(Some(v)) => v,
+        Ok(None) => return unauthorized(),
+        Err(e) => {
+            tracing::warn!(error = ?e, user = %basic.user, "registry proxy credential lookup failed");
+            return unauthorized();
+        }
+    };
     if cred.kind != "registry" {
         return unauthorized();
     }
@@ -126,9 +131,7 @@ async fn handle(State(state): State<AppState>, req: Request) -> Response {
         }
     }
 
-    let body_stream = body
-        .into_data_stream()
-        .map_err(std::io::Error::other);
+    let body_stream = body.into_data_stream().map_err(std::io::Error::other);
     let upstream_body = reqwest::Body::wrap_stream(body_stream);
 
     let client = reqwest::Client::builder()
@@ -260,15 +263,24 @@ mod tests {
         assert_eq!(workspace_from_path("/v2"), None);
         assert_eq!(workspace_from_path("/v2/"), None);
         assert_eq!(workspace_from_path("/v2/_catalog"), None);
-        assert_eq!(workspace_from_path("/v2/ws_abc/svc/manifests/tag"), Some("ws_abc"));
-        assert_eq!(workspace_from_path("/v2/ws_abc/svc/blobs/sha256:def"), Some("ws_abc"));
+        assert_eq!(
+            workspace_from_path("/v2/ws_abc/svc/manifests/tag"),
+            Some("ws_abc")
+        );
+        assert_eq!(
+            workspace_from_path("/v2/ws_abc/svc/blobs/sha256:def"),
+            Some("ws_abc")
+        );
         assert_eq!(workspace_from_path("/v2/ws_abc"), Some("ws_abc"));
     }
 
     #[test]
     fn basic_parse() {
         let mut h = HeaderMap::new();
-        h.insert(header::AUTHORIZATION, HeaderValue::from_static("Basic dXNlcjpwYXNz"));
+        h.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
         let b = parse_basic(&h).unwrap();
         assert_eq!(b.user, "user");
         assert_eq!(b.pass, "pass");

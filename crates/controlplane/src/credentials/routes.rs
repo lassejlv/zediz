@@ -169,9 +169,7 @@ async fn create(
             if is_bundled {
                 metadata
                     .as_object_mut()
-                    .ok_or_else(|| {
-                        ApiError::Validation("metadata must be an object".into())
-                    })?
+                    .ok_or_else(|| ApiError::Validation("metadata must be an object".into()))?
                     .insert("username".into(), JsonValue::String(id.to_string()));
             }
         }

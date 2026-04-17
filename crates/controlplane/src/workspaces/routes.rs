@@ -390,4 +390,3 @@ async fn remove_member(
         .await?;
     Ok(())
 }
-

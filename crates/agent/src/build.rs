@@ -127,7 +127,14 @@ async fn do_build(
         }
         clone.env("ZEDIZ_GIT_TOKEN", pat);
     }
-    run_logged(client, node_token, &spec.deployment_id, &mut clone, "git-clone").await?;
+    run_logged(
+        client,
+        node_token,
+        &spec.deployment_id,
+        &mut clone,
+        "git-clone",
+    )
+    .await?;
 
     // Capture the commit sha for reporting. Fine to print the full sha; short
     // form is derivable client-side.
@@ -217,10 +224,7 @@ async fn build_with_dockerfile(
     cwd: &Path,
     meta_path: &Path,
 ) -> Result<()> {
-    let dockerfile = spec
-        .dockerfile_path
-        .as_deref()
-        .unwrap_or("Dockerfile");
+    let dockerfile = spec.dockerfile_path.as_deref().unwrap_or("Dockerfile");
     let mut cmd = Command::new("docker");
     cmd.args([
         "buildx",
@@ -259,7 +263,14 @@ async fn build_with_railpack(
         .args(["prepare", ".", "--plan-out"])
         .arg(&plan_path)
         .current_dir(cwd);
-    run_logged(client, node_token, &spec.deployment_id, &mut prepare, "railpack-prepare").await?;
+    run_logged(
+        client,
+        node_token,
+        &spec.deployment_id,
+        &mut prepare,
+        "railpack-prepare",
+    )
+    .await?;
 
     let mut cmd = Command::new("docker");
     cmd.args([
@@ -277,7 +288,14 @@ async fn build_with_railpack(
     .arg(".")
     .current_dir(cwd);
 
-    run_logged(client, node_token, &spec.deployment_id, &mut cmd, "railpack-build").await
+    run_logged(
+        client,
+        node_token,
+        &spec.deployment_id,
+        &mut cmd,
+        "railpack-build",
+    )
+    .await
 }
 
 /// Resolve `root_dir` relative to the clone directory, rejecting paths that
@@ -308,7 +326,10 @@ async fn git_rev_parse(dir: &Path) -> Result<String> {
         .output()
         .await?;
     if !out.status.success() {
-        bail!("git rev-parse failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "git rev-parse failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(String::from_utf8(out.stdout)?.trim().to_string())
 }
