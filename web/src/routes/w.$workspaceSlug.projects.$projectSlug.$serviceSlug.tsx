@@ -63,7 +63,7 @@ function ServicePage() {
 
   const latest = deployments.data?.[0];
   useEffect(() => {
-    if (!activeDeploymentId && latest && latest.container_id) {
+    if (!activeDeploymentId && latest) {
       setActiveDeploymentId(latest.id);
     }
   }, [activeDeploymentId, latest]);
@@ -897,4 +897,3 @@ function SettingsTab({ service }: { service: ServiceSummary | undefined }) {
     </Stack>
   );
 }
-

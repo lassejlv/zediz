@@ -312,12 +312,24 @@ async fn push_logs(
     Path(deployment_id): Path<String>,
     Json(req): Json<PushLogsRequest>,
 ) -> ApiResult<()> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM deployments WHERE id = $1 AND node_id = $2")
-            .bind(&deployment_id)
-            .bind(&claims.node_id)
-            .fetch_optional(state.pool())
-            .await?;
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT d.id FROM deployments d \
+         WHERE d.id = $1 AND ( \
+             d.node_id = $2 OR \
+             EXISTS ( \
+                 SELECT 1 FROM node_allocations a \
+                 WHERE a.deployment_id = d.id AND a.node_id = $2 \
+             ) OR \
+             EXISTS ( \
+                 SELECT 1 FROM builds b \
+                 WHERE b.deployment_id = d.id AND b.node_id = $2 \
+             ) \
+         )",
+    )
+    .bind(&deployment_id)
+    .bind(&claims.node_id)
+    .fetch_optional(state.pool())
+    .await?;
     row.ok_or(ApiError::NotFound)?;
 
     for l in req.lines {
