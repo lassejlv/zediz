@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
-import { Plus } from 'lucide-react';
+import { LayoutTemplate, Plus } from 'lucide-react';
 import { Button, EmptyState } from '@/components/ui';
 import { projectQuery } from '@/lib/projects';
 import { servicesQuery, serviceDeploymentsQuery } from '@/lib/services';
@@ -78,14 +78,24 @@ function ProjectBoard() {
           canCreate={canCreate}
           createTrigger={
             canCreate ? (
-              <Link
-                to="/w/$workspaceSlug/projects/$projectSlug/new"
-                params={{ workspaceSlug, projectSlug }}
-              >
-                <Button>
-                  <Plus className="mr-1 h-3.5 w-3.5" /> Add service
-                </Button>
-              </Link>
+              <div className="flex items-center gap-2">
+                <Link
+                  to="/w/$workspaceSlug/projects/$projectSlug/templates"
+                  params={{ workspaceSlug, projectSlug }}
+                >
+                  <Button variant="secondary">
+                    <LayoutTemplate className="mr-1 h-3.5 w-3.5" /> Templates
+                  </Button>
+                </Link>
+                <Link
+                  to="/w/$workspaceSlug/projects/$projectSlug/new"
+                  params={{ workspaceSlug, projectSlug }}
+                >
+                  <Button>
+                    <Plus className="mr-1 h-3.5 w-3.5" /> Add service
+                  </Button>
+                </Link>
+              </div>
             ) : null
           }
         />
@@ -97,14 +107,24 @@ function ProjectBoard() {
           body="A service runs a container in this project. Add one to deploy."
           cta={
             canCreate ? (
-              <Link
-                to="/w/$workspaceSlug/projects/$projectSlug/new"
-                params={{ workspaceSlug, projectSlug }}
-              >
-                <Button>
-                  <Plus className="mr-1 h-3.5 w-3.5" /> Add service
-                </Button>
-              </Link>
+              <div className="flex items-center gap-2">
+                <Link
+                  to="/w/$workspaceSlug/projects/$projectSlug/templates"
+                  params={{ workspaceSlug, projectSlug }}
+                >
+                  <Button variant="secondary">
+                    <LayoutTemplate className="mr-1 h-3.5 w-3.5" /> Start from template
+                  </Button>
+                </Link>
+                <Link
+                  to="/w/$workspaceSlug/projects/$projectSlug/new"
+                  params={{ workspaceSlug, projectSlug }}
+                >
+                  <Button>
+                    <Plus className="mr-1 h-3.5 w-3.5" /> Blank service
+                  </Button>
+                </Link>
+              </div>
             ) : null
           }
         />
