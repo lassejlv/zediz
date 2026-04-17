@@ -150,6 +150,16 @@ export interface BuildSummary {
   updated_at: string;
 }
 
+export interface RuntimeMetrics {
+  deployment_id: string;
+  ts: string;
+  cpu_percent: number;
+  memory_bytes: number;
+  memory_limit_bytes?: number | null;
+  rx_bytes: number;
+  tx_bytes: number;
+}
+
 export interface DeploymentSummary {
   id: string;
   service_id: string;
@@ -162,6 +172,7 @@ export interface DeploymentSummary {
   started_at: string | null;
   stopped_at: string | null;
   updated_at: string;
+  runtime_metrics?: RuntimeMetrics | null;
 }
 
 export type TlsStatus = 'pending' | 'active' | 'failed';

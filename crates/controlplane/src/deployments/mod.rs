@@ -22,6 +22,8 @@ pub struct DeploymentSummary {
     pub started_at: Option<DateTime<Utc>>,
     pub stopped_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_metrics: Option<JsonValue>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -43,6 +45,7 @@ pub struct DeploymentRow {
     pub started_at: Option<DateTime<Utc>>,
     pub stopped_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
+    pub runtime_metrics: Option<JsonValue>,
 }
 
 impl TryFrom<DeploymentRow> for DeploymentSummary {
@@ -70,6 +73,7 @@ impl TryFrom<DeploymentRow> for DeploymentSummary {
             started_at: r.started_at,
             stopped_at: r.stopped_at,
             updated_at: r.updated_at,
+            runtime_metrics: r.runtime_metrics,
         })
     }
 }
@@ -85,7 +89,7 @@ pub async fn create_deployment(
         "INSERT INTO deployments (id, service_id, status, image_ref, env_vars, ports, resources) \
          VALUES ($1, $2, 'pending', $3, $4, $5, $6) \
          RETURNING id, service_id, node_id, status, image_ref, env_vars, ports, resources, \
-                   container_id, reason, created_at, started_at, stopped_at, updated_at",
+                   container_id, reason, created_at, started_at, stopped_at, updated_at, runtime_metrics",
     )
     .bind(id.to_string())
     .bind(service.id.to_string())
@@ -105,7 +109,7 @@ pub async fn list_for_service(
 ) -> ApiResult<Vec<DeploymentSummary>> {
     let rows: Vec<DeploymentRow> = sqlx::query_as(
         "SELECT id, service_id, node_id, status, image_ref, env_vars, ports, resources, \
-                container_id, reason, created_at, started_at, stopped_at, updated_at \
+                container_id, reason, created_at, started_at, stopped_at, updated_at, runtime_metrics \
          FROM deployments WHERE service_id = $1 ORDER BY created_at DESC",
     )
     .bind(service_id)
@@ -120,7 +124,7 @@ pub async fn list_for_service(
 pub async fn fetch_by_id(pool: &PgPool, deployment_id: &str) -> ApiResult<DeploymentRow> {
     let row: Option<DeploymentRow> = sqlx::query_as(
         "SELECT id, service_id, node_id, status, image_ref, env_vars, ports, resources, \
-                container_id, reason, created_at, started_at, stopped_at, updated_at \
+                container_id, reason, created_at, started_at, stopped_at, updated_at, runtime_metrics \
          FROM deployments WHERE id = $1",
     )
     .bind(deployment_id)

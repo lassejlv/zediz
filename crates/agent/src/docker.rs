@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use bollard::auth::DockerCredentials;
 use bollard::container::{
-    Config, CreateContainerOptions, LogOutput, LogsOptions, RemoveContainerOptions,
+    Config, CreateContainerOptions, LogOutput, LogsOptions, RemoveContainerOptions, StatsOptions,
     StopContainerOptions,
 };
 use bollard::image::CreateImageOptions;
@@ -11,6 +11,15 @@ use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use serde::Deserialize;
 use std::collections::HashMap;
+
+#[derive(Debug, Clone)]
+pub struct ContainerSample {
+    pub cpu_percent: f32,
+    pub memory_bytes: u64,
+    pub memory_limit_bytes: Option<u64>,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+}
 
 use crate::client::LogLineOut;
 
@@ -181,6 +190,80 @@ impl DockerExec {
             .await?;
 
         Ok(created.id)
+    }
+
+    /// One-shot stats snapshot for a deployment's container. Uses bollard's
+    /// non-streaming + non-one-shot mode so Docker returns a two-sample pair
+    /// (`precpu_stats` + `cpu_stats`) we can use to compute CPU %. Takes
+    /// roughly one second per call; callers should parallelize across
+    /// multiple deployments.
+    ///
+    /// Returns `Ok(None)` if the container is gone (404). Errors propagate
+    /// so the tick loop can log and skip.
+    pub async fn sample_stats(&self, deployment_id: &str) -> Result<Option<ContainerSample>> {
+        let name = Self::container_name(deployment_id);
+        let mut stream = self.docker.stats(
+            &name,
+            Some(StatsOptions {
+                stream: false,
+                one_shot: false,
+            }),
+        );
+        let event = stream.next().await;
+        let s = match event {
+            Some(Ok(s)) => s,
+            Some(Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404,
+                ..
+            })) => return Ok(None),
+            Some(Err(e)) => return Err(e.into()),
+            None => return Ok(None),
+        };
+
+        let cpu_total = s.cpu_stats.cpu_usage.total_usage;
+        let pre_cpu_total = s.precpu_stats.cpu_usage.total_usage;
+        let cpu_delta = cpu_total.saturating_sub(pre_cpu_total) as f64;
+        let sys_now = s.cpu_stats.system_cpu_usage.unwrap_or(0);
+        let sys_pre = s.precpu_stats.system_cpu_usage.unwrap_or(0);
+        let sys_delta = sys_now.saturating_sub(sys_pre) as f64;
+        let online_cpus = s
+            .cpu_stats
+            .online_cpus
+            .or_else(|| {
+                s.cpu_stats
+                    .cpu_usage
+                    .percpu_usage
+                    .as_ref()
+                    .map(|v| v.len() as u64)
+            })
+            .unwrap_or(1)
+            .max(1) as f64;
+        let cpu_percent = if sys_delta > 0.0 && cpu_delta > 0.0 {
+            (cpu_delta / sys_delta) * online_cpus * 100.0
+        } else {
+            0.0
+        };
+
+        let memory_bytes = s.memory_stats.usage.unwrap_or(0);
+        let memory_limit_bytes = s.memory_stats.limit;
+
+        let (rx, tx) = s
+            .networks
+            .as_ref()
+            .map(|nets| {
+                nets.values().fold((0u64, 0u64), |(rx, tx), net| {
+                    (rx + net.rx_bytes, tx + net.tx_bytes)
+                })
+            })
+            .unwrap_or((0, 0));
+
+        Ok(Some(ContainerSample {
+            cpu_percent: cpu_percent as f32,
+            memory_bytes,
+            memory_limit_bytes,
+            rx_bytes: rx,
+            tx_bytes: tx,
+        }))
     }
 
     /// Inspect the zediz-managed container for a deployment. Returns

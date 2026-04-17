@@ -160,6 +160,20 @@ struct HeartbeatRequest {
     load_avg_1m: Option<f32>,
     #[serde(default)]
     acks: Vec<CommandAck>,
+    #[serde(default)]
+    container_metrics: Vec<ContainerMetricSample>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct ContainerMetricSample {
+    deployment_id: String,
+    ts: DateTime<Utc>,
+    cpu_percent: f32,
+    memory_bytes: i64,
+    #[serde(default)]
+    memory_limit_bytes: Option<i64>,
+    rx_bytes: i64,
+    tx_bytes: i64,
 }
 
 #[derive(Deserialize)]
@@ -200,6 +214,28 @@ async fn heartbeat(
             ack.message.as_deref(),
         )
         .await?;
+    }
+
+    for sample in req.container_metrics {
+        // Scope the write to deployments owned by this node to prevent a
+        // compromised agent from poisoning other nodes' rows.
+        if let Err(e) = sqlx::query(
+            "UPDATE deployments \
+             SET runtime_metrics = $1 \
+             WHERE id = $2 AND node_id = $3",
+        )
+        .bind(serde_json::to_value(&sample).unwrap_or(serde_json::Value::Null))
+        .bind(&sample.deployment_id)
+        .bind(&claims.node_id)
+        .execute(state.pool())
+        .await
+        {
+            tracing::warn!(
+                deployment = %sample.deployment_id,
+                error = ?e,
+                "store runtime_metrics",
+            );
+        }
     }
 
     let pending = commands::claim_for_node(state.pool(), &claims.node_id, 16).await?;

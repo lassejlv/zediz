@@ -1,8 +1,11 @@
 use anyhow::Result;
+use chrono::Utc;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::client::{CommandAck, ControlPlaneClient, HeartbeatBody, StatusBody};
+use crate::client::{
+    CommandAck, ContainerMetricSample, ControlPlaneClient, HeartbeatBody, StatusBody,
+};
 use crate::docker::{DockerExec, PortSpec, RegistryAuth, RunSpec};
 
 /// Upper bound on a single `pull_and_run` so a hung Docker daemon or
@@ -55,6 +58,11 @@ impl Executor {
         // stuck in `pulling` on the CP forever.
         self.reconcile_tracked().await;
 
+        // Sample container stats in parallel. bollard's stats with
+        // `stream:false, one_shot:false` waits ~1s for a precpu/cpu pair;
+        // running them concurrently keeps the tick tight.
+        let metrics = self.sample_container_metrics().await;
+
         // Ship log chunks for tracked deployments.
         let tracked_ids: Vec<String> = self.tracked.iter().cloned().collect();
         for deployment_id in tracked_ids {
@@ -63,14 +71,55 @@ impl Executor {
             }
         }
 
-        if !acks.is_empty() {
+        if !acks.is_empty() || !metrics.is_empty() {
             let body = HeartbeatBody {
                 acks,
+                container_metrics: metrics,
                 ..Default::default()
             };
             let _ = self.client.heartbeat(&self.node_token, &body).await;
         }
         Ok(())
+    }
+
+    async fn sample_container_metrics(&self) -> Vec<ContainerMetricSample> {
+        let tracked: Vec<String> = self.tracked.iter().cloned().collect();
+        if tracked.is_empty() {
+            return Vec::new();
+        }
+        let docker = self.docker.clone();
+        let futures = tracked.into_iter().map(|id| {
+            let d = docker.clone();
+            async move {
+                let s = d.sample_stats(&id).await;
+                (id, s)
+            }
+        });
+        let results = futures::future::join_all(futures).await;
+
+        let mut out = Vec::with_capacity(results.len());
+        for (deployment_id, sample) in results {
+            match sample {
+                Ok(Some(s)) => out.push(ContainerMetricSample {
+                    deployment_id,
+                    ts: Utc::now(),
+                    cpu_percent: s.cpu_percent,
+                    memory_bytes: s.memory_bytes,
+                    memory_limit_bytes: s.memory_limit_bytes,
+                    rx_bytes: s.rx_bytes,
+                    tx_bytes: s.tx_bytes,
+                }),
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        deployment = %deployment_id,
+                        error = ?e,
+                        "sample_stats",
+                    );
+                }
+            }
+        }
+        out
     }
 
     /// For each deployment we think is live, check Docker's actual state

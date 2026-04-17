@@ -161,7 +161,25 @@ pub struct HeartbeatBody {
     pub memory_used_mb: Option<i32>,
     pub disk_used_mb: Option<i32>,
     pub load_avg_1m: Option<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub acks: Vec<CommandAck>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub container_metrics: Vec<ContainerMetricSample>,
+}
+
+/// One live snapshot of a running container's resource usage. Agent
+/// reports these alongside heartbeat acks; the CP overwrites the
+/// matching `deployments.runtime_metrics` JSONB row.
+#[derive(Debug, Serialize)]
+pub struct ContainerMetricSample {
+    pub deployment_id: String,
+    pub ts: DateTime<Utc>,
+    pub cpu_percent: f32,
+    pub memory_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_limit_bytes: Option<u64>,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
 }
 
 #[derive(Debug, Serialize)]
