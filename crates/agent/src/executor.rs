@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::client::{
     CommandAck, ContainerMetricSample, ControlPlaneClient, HeartbeatBody, StatusBody,
 };
-use crate::docker::{DockerExec, PortSpec, RegistryAuth, RunSpec};
+use crate::docker::{DockerExec, PortSpec, RegistryAuth, RunSpec, VolumeMount};
 
 /// Upper bound on a single `pull_and_run` so a hung Docker daemon or
 /// unreachable registry can't leave the deployment stuck forever. The
@@ -522,6 +522,17 @@ fn parse_run_spec(deployment_id: &str, payload: &serde_json::Value) -> Result<Ru
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok());
 
+    let volume = payload.get("volume").and_then(|v| {
+        let device_path = v.get("device_path")?.as_str()?.to_string();
+        let host_path = v.get("host_path")?.as_str()?.to_string();
+        let container_path = v.get("container_path")?.as_str()?.to_string();
+        Some(VolumeMount {
+            device_path,
+            host_path,
+            container_path,
+        })
+    });
+
     Ok(RunSpec {
         deployment_id: deployment_id.into(),
         image,
@@ -530,5 +541,6 @@ fn parse_run_spec(deployment_id: &str, payload: &serde_json::Value) -> Result<Ru
         cpu_millis,
         memory_mb,
         registry,
+        volume,
     })
 }

@@ -325,12 +325,13 @@ async fn dispatch_build(state: &AppState, b: QueuedBuild) -> Result<()> {
                 memory_mb: BUILD_MEMORY_MB,
                 disk_mb: BUILD_DISK_MB,
             };
-            let reason = match try_provision_for(state, &b.workspace_id, &build_resources).await? {
-                ProvisionOutcome::Provisioning => {
-                    "waiting for provisioned node to register".to_string()
-                }
-                ProvisionOutcome::Skipped(msg) => msg,
-            };
+            let reason =
+                match try_provision_for(state, &b.workspace_id, &build_resources, None).await? {
+                    ProvisionOutcome::Provisioning => {
+                        "waiting for provisioned node to register".to_string()
+                    }
+                    ProvisionOutcome::Skipped(msg) => msg,
+                };
             sqlx::query(
                 "UPDATE builds SET reason = $1, updated_at = now() \
                  WHERE id = $2 AND status = 'queued'",
@@ -677,23 +678,176 @@ async fn pick_preferred_node_for_domains(
     }))
 }
 
-async fn place_and_run(state: &AppState, p: &PendingDeployment) -> Result<()> {
-    let picked = match pick_preferred_node_for_domains(
-        state.pool(),
-        &p.service_id,
-        &p.deployment_id,
-        &p.workspace_id,
-        &p.resources,
+/// Volume-bound services must land on a node in the volume's location.
+/// Prefer the node the volume is currently attached to (no detach dance
+/// needed); fall back to any ready node in the right location. Returns
+/// None if nothing fits — the caller triggers provisioning with a
+/// location override.
+async fn pick_required_node_for_volume(
+    pool: &PgPool,
+    workspace_id: &str,
+    need: &Resources,
+    volume: &crate::volumes::VolumeRow,
+) -> Result<Option<NodeCapacity>> {
+    // Preferred: the volume's currently-attached node.
+    if let Some(attached) = volume.attached_node_id.as_deref() {
+        let row: Option<NodeCapacity> = sqlx::query_as(
+            "SELECT n.id, n.provider, n.total_cpu_millis, n.total_memory_mb, n.total_disk_mb, \
+                    COALESCE(SUM(a.cpu_millis), 0)::bigint AS used_cpu_millis, \
+                    COALESCE(SUM(a.memory_mb), 0)::bigint AS used_memory_mb, \
+                    COALESCE(SUM(a.disk_mb), 0)::bigint AS used_disk_mb \
+             FROM nodes n \
+             LEFT JOIN node_allocations a ON a.node_id = n.id \
+             WHERE n.workspace_id = $1 AND n.id = $2 AND n.status = 'ready' \
+             GROUP BY n.id",
+        )
+        .bind(workspace_id)
+        .bind(attached)
+        .fetch_optional(pool)
+        .await?;
+        if let Some(fit) = row.filter(|row| fits(row, need)) {
+            return Ok(Some(fit));
+        }
+    }
+
+    // Fallback: any ready node in the same Hetzner location.
+    let rows: Vec<NodeCapacity> = sqlx::query_as(
+        "SELECT n.id, n.provider, n.total_cpu_millis, n.total_memory_mb, n.total_disk_mb, \
+                COALESCE(SUM(a.cpu_millis), 0)::bigint AS used_cpu_millis, \
+                COALESCE(SUM(a.memory_mb), 0)::bigint AS used_memory_mb, \
+                COALESCE(SUM(a.disk_mb), 0)::bigint AS used_disk_mb \
+         FROM nodes n \
+         LEFT JOIN node_allocations a ON a.node_id = n.id \
+         WHERE n.workspace_id = $1 AND n.status = 'ready' \
+           AND n.hetzner_location = $2 \
+         GROUP BY n.id \
+         ORDER BY n.created_at ASC",
     )
-    .await?
-    {
-        Some(node) => Some(node),
-        None => pick_node(state.pool(), &p.workspace_id, &p.resources).await?,
+    .bind(workspace_id)
+    .bind(&volume.hetzner_location)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().find(|row| fits(row, need)))
+}
+
+fn fits(row: &NodeCapacity, need: &Resources) -> bool {
+    let free_cpu = row.total_cpu_millis as i64 - row.used_cpu_millis.unwrap_or(0);
+    let free_mem = row.total_memory_mb as i64 - row.used_memory_mb.unwrap_or(0);
+    let free_disk = row.total_disk_mb as i64 - row.used_disk_mb.unwrap_or(0);
+    free_cpu >= need.cpu_millis as i64
+        && free_mem >= need.memory_mb as i64
+        && free_disk >= need.disk_mb as i64
+}
+
+/// Make sure the Hetzner volume is attached to `target_node`. Detaches
+/// from a different node first if needed, then attaches. Updates the
+/// `volumes` row as each step completes so a crash mid-flow leaves a
+/// recoverable state.
+async fn ensure_volume_attached(
+    state: &AppState,
+    volume: &crate::volumes::VolumeRow,
+    target_node: &str,
+    workspace_id: &str,
+) -> Result<()> {
+    if volume.attached_node_id.as_deref() == Some(target_node) {
+        return Ok(());
+    }
+    let hz_volume_id = volume
+        .hetzner_volume_id
+        .ok_or_else(|| anyhow!("volume {} has no Hetzner id", volume.id))?;
+
+    let token = credentials::first_hetzner_token(state.pool(), state.master_key(), workspace_id)
+        .await
+        .context("loading Hetzner token for volume attach")?
+        .ok_or_else(|| anyhow!("workspace has no Hetzner API token"))?;
+    let client = zediz_hetzner::HetznerClient::new(&token);
+
+    // Detach from current node (if any) before attaching elsewhere.
+    if volume.attached_node_id.is_some() {
+        sqlx::query("UPDATE volumes SET status = 'detaching', updated_at = now() WHERE id = $1")
+            .bind(&volume.id)
+            .execute(state.pool())
+            .await?;
+        let action = client
+            .detach_volume(hz_volume_id)
+            .await
+            .map_err(|e| anyhow!("hetzner detach_volume: {e}"))?;
+        client
+            .wait_for_action(action.id, std::time::Duration::from_secs(60))
+            .await
+            .map_err(|e| anyhow!("hetzner detach action: {e}"))?;
+        sqlx::query("UPDATE volumes SET attached_node_id = NULL, updated_at = now() WHERE id = $1")
+            .bind(&volume.id)
+            .execute(state.pool())
+            .await?;
+    }
+
+    // Look up the target node's Hetzner server id.
+    let server_id: Option<(Option<i64>,)> =
+        sqlx::query_as("SELECT hetzner_server_id FROM nodes WHERE id = $1")
+            .bind(target_node)
+            .fetch_optional(state.pool())
+            .await?;
+    let server_id = server_id
+        .and_then(|(id,)| id)
+        .ok_or_else(|| anyhow!("target node has no Hetzner server id"))?;
+
+    let action = client
+        .attach_volume(hz_volume_id, server_id, false)
+        .await
+        .map_err(|e| anyhow!("hetzner attach_volume: {e}"))?;
+    client
+        .wait_for_action(action.id, std::time::Duration::from_secs(60))
+        .await
+        .map_err(|e| anyhow!("hetzner attach action: {e}"))?;
+
+    sqlx::query(
+        "UPDATE volumes \
+         SET attached_node_id = $1, status = 'attached', reason = NULL, updated_at = now() \
+         WHERE id = $2",
+    )
+    .bind(target_node)
+    .bind(&volume.id)
+    .execute(state.pool())
+    .await?;
+    Ok(())
+}
+
+async fn place_and_run(state: &AppState, p: &PendingDeployment) -> Result<()> {
+    // Volume-bound services must land on a node in the volume's region.
+    // Look that up first so it takes priority over domain stickiness.
+    let volume = crate::volumes::fetch_for_service(state.pool(), &p.service_id)
+        .await
+        .map_err(|e| anyhow!("{e:?}"))?;
+    let volume_location = volume.as_ref().map(|v| v.hetzner_location.clone());
+
+    let picked = if let Some(ref vol) = volume {
+        pick_required_node_for_volume(state.pool(), &p.workspace_id, &p.resources, vol).await?
+    } else {
+        match pick_preferred_node_for_domains(
+            state.pool(),
+            &p.service_id,
+            &p.deployment_id,
+            &p.workspace_id,
+            &p.resources,
+        )
+        .await?
+        {
+            Some(node) => Some(node),
+            None => pick_node(state.pool(), &p.workspace_id, &p.resources).await?,
+        }
     };
+
     let node = match picked {
         Some(n) => n,
         None => {
-            let outcome = try_provision_for(state, &p.workspace_id, &p.resources).await?;
+            let outcome = try_provision_for(
+                state,
+                &p.workspace_id,
+                &p.resources,
+                volume_location.as_deref(),
+            )
+            .await?;
             let reason = match outcome {
                 ProvisionOutcome::Provisioning => {
                     "waiting for provisioned node to register".to_string()
@@ -711,6 +865,15 @@ async fn place_and_run(state: &AppState, p: &PendingDeployment) -> Result<()> {
             return Ok(());
         }
     };
+
+    // If the service has a volume, make sure it's physically attached to
+    // the target node before we dispatch PullAndRun. Failure here fails
+    // the placement — the deployment goes `errored` via the caller.
+    if let Some(vol) = volume.as_ref() {
+        ensure_volume_attached(state, vol, &node.id, &p.workspace_id)
+            .await
+            .context("attaching volume to target node")?;
+    }
 
     // Reserve capacity atomically.
     let mut tx = state.pool().begin().await?;
@@ -739,12 +902,17 @@ async fn place_and_run(state: &AppState, p: &PendingDeployment) -> Result<()> {
 
     // Only Hetzner agents run containers — local placements are intentionally gone.
     match node.provider.as_str() {
-        "hetzner" => dispatch_to_agent(state, &node.id, p).await,
+        "hetzner" => dispatch_to_agent(state, &node.id, p, volume.as_ref()).await,
         other => Err(anyhow!("unsupported node provider: {other}")),
     }
 }
 
-async fn dispatch_to_agent(state: &AppState, node_id: &str, p: &PendingDeployment) -> Result<()> {
+async fn dispatch_to_agent(
+    state: &AppState,
+    node_id: &str,
+    p: &PendingDeployment,
+    volume: Option<&crate::volumes::VolumeRow>,
+) -> Result<()> {
     // If the service references a registry credential, decrypt it and thread
     // the (url, username, password) into the payload so bollard's create_image
     // pulls with auth. Only meaningful for images in private registries
@@ -769,6 +937,30 @@ async fn dispatch_to_agent(state: &AppState, node_id: &str, p: &PendingDeploymen
         })
     });
 
+    // Build the volume mount block (if any). The `device_path` follows
+    // Hetzner's stable `/dev/disk/by-id/scsi-0HC_Volume_<id>` naming;
+    // `host_path` is deterministic so the agent can idempotently mount.
+    let volume_device;
+    let volume_host;
+    let volume_mount = if let Some(v) = volume {
+        let hz_id = v
+            .hetzner_volume_id
+            .ok_or_else(|| anyhow!("attached volume missing Hetzner id"))?;
+        let mount_path = v
+            .mount_path
+            .as_deref()
+            .ok_or_else(|| anyhow!("attached volume missing mount_path"))?;
+        volume_device = format!("/dev/disk/by-id/scsi-0HC_Volume_{hz_id}");
+        volume_host = format!("/var/lib/zediz/volumes/{}", v.id);
+        Some(commands::VolumeMount {
+            device_path: &volume_device,
+            host_path: &volume_host,
+            container_path: mount_path,
+        })
+    } else {
+        None
+    };
+
     let payload = commands::pull_and_run_payload(
         &p.image,
         &json!(p.env_vars),
@@ -776,6 +968,7 @@ async fn dispatch_to_agent(state: &AppState, node_id: &str, p: &PendingDeploymen
         p.resources.cpu_millis,
         p.resources.memory_mb,
         registry_auth.as_ref(),
+        volume_mount.as_ref(),
     );
     commands::enqueue(
         state.pool(),
@@ -797,10 +990,15 @@ pub enum ProvisionOutcome {
 
 /// Decide whether to provision a new Hetzner node for `need`. Returns the
 /// outcome along with a human-readable reason.
+///
+/// `location_override` pins the region (e.g. when a volume-bound service
+/// needs capacity in the volume's location instead of the workspace's
+/// default).
 async fn try_provision_for(
     state: &AppState,
     workspace_id: &str,
     need: &Resources,
+    location_override: Option<&str>,
 ) -> Result<ProvisionOutcome> {
     #[derive(sqlx::FromRow)]
     struct WsSettings {
@@ -876,13 +1074,14 @@ async fn try_provision_for(
 
     let ssh_key_ids = ssh_keys::ensure_on_hetzner(state.pool(), workspace_id, &token).await?;
 
+    let location = location_override.unwrap_or(ws.hetzner_location.as_str());
     let result = hetzner_provisioner::provision(
         state.pool(),
         state.config(),
         state.master_key(),
         &token,
         workspace_id,
-        &ws.hetzner_location,
+        location,
         hetzner_provisioner::NodeSize::Fit(need),
         ssh_key_ids,
     )

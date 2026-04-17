@@ -535,15 +535,23 @@ async fn deploy(
 
     // Rolling cutover works when the old and new containers can coexist
     // on the node: Caddy routes via the internal network by container
-    // name, so domain-only services don't conflict. But if the service
-    // publishes any host port (host_port set on a PortMap), both
-    // containers can't bind the same :port on 0.0.0.0 at once — Docker
-    // rejects the second start with "port is already allocated". Fall
-    // back to the pre-rolling flow for those services: retire the old
-    // running deployment now so the port frees up before the agent
-    // processes the new PullAndRun. Domain-only services keep rolling.
+    // name, so domain-only services don't conflict. But:
+    //   - A published host_port is a singleton on the host — Docker
+    //     rejects the second bind with "port is already allocated".
+    //   - A Hetzner volume can only be attached to one server at a
+    //     time, so overlapping deployments can't both mount it.
+    // Either case falls back to the pre-rolling flow: stop the old
+    // deployment before scheduling the new one.
     let uses_host_ports = summary.ports.iter().any(|p| p.host_port.is_some());
-    cancel_pre_deploy(state.pool(), &summary.id.to_string(), uses_host_ports).await?;
+    let has_volume = crate::volumes::fetch_for_service(state.pool(), &summary.id.to_string())
+        .await?
+        .is_some();
+    cancel_pre_deploy(
+        state.pool(),
+        &summary.id.to_string(),
+        uses_host_ports || has_volume,
+    )
+    .await?;
 
     let deployment = match summary.source.as_str() {
         "image" => {

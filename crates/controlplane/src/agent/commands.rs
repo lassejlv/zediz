@@ -120,6 +120,18 @@ pub async fn mark_acked(
     Ok(())
 }
 
+pub struct VolumeMount<'a> {
+    /// `/dev/disk/by-id/scsi-0HC_Volume_<hetzner_volume_id>` — the agent
+    /// mounts this block device at `host_path` before starting the
+    /// container.
+    pub device_path: &'a str,
+    /// Deterministic path on the node where the block device gets
+    /// mounted. Conventionally `/var/lib/zediz/volumes/<volume_id>`.
+    pub host_path: &'a str,
+    /// Where the container sees the volume.
+    pub container_path: &'a str,
+}
+
 pub fn pull_and_run_payload(
     image: &str,
     env: &serde_json::Value,
@@ -127,9 +139,17 @@ pub fn pull_and_run_payload(
     cpu_millis: u32,
     memory_mb: u32,
     registry: Option<&RegistryAuth<'_>>,
+    volume: Option<&VolumeMount<'_>>,
 ) -> JsonValue {
     let registry =
         registry.map(|r| json!({ "url": r.url, "username": r.username, "password": r.password }));
+    let volume = volume.map(|v| {
+        json!({
+            "device_path": v.device_path,
+            "host_path": v.host_path,
+            "container_path": v.container_path,
+        })
+    });
     json!({
         "image": image,
         "env": env,
@@ -137,6 +157,7 @@ pub fn pull_and_run_payload(
         "cpu_millis": cpu_millis,
         "memory_mb": memory_mb,
         "registry": registry,
+        "volume": volume,
     })
 }
 

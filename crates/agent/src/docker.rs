@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use bollard::auth::DockerCredentials;
 use bollard::container::{
     Config, CreateContainerOptions, LogOutput, LogsOptions, RemoveContainerOptions, StatsOptions,
@@ -120,6 +120,24 @@ impl DockerExec {
         labels.insert("zediz.deployment_id".into(), spec.deployment_id.clone());
         labels.insert("zediz.managed".into(), "true".into());
 
+        // If a Hetzner volume is attached, make sure it's mounted on the
+        // host before handing a bind to bollard. This is idempotent —
+        // a second PullAndRun for the same volume is a no-op if the
+        // mount is already in place.
+        let mounts = if let Some(v) = spec.volume.as_ref() {
+            ensure_volume_mounted(&v.device_path, &v.host_path)
+                .await
+                .with_context(|| format!("mounting volume at {}", &v.host_path))?;
+            Some(vec![bollard::models::Mount {
+                target: Some(v.container_path.clone()),
+                source: Some(v.host_path.clone()),
+                typ: Some(bollard::models::MountTypeEnum::BIND),
+                ..Default::default()
+            }])
+        } else {
+            None
+        };
+
         let host_config = HostConfig {
             port_bindings: if port_bindings.is_empty() {
                 None
@@ -135,6 +153,7 @@ impl DockerExec {
             // Join the shared `zediz` network so Caddy can reach this
             // container by name for domain routing.
             network_mode: Some(crate::caddy::NETWORK.into()),
+            mounts,
             ..Default::default()
         };
 
@@ -427,6 +446,18 @@ pub struct RunSpec {
     /// Private-registry auth for the pull. Only the bundled registry needs
     /// this today (external registries for image services are still public).
     pub registry: Option<RegistryAuth>,
+    /// Optional Hetzner volume bound to this service. The agent ensures
+    /// the block device at `device_path` is mounted at `host_path`
+    /// before starting the container, then bind-mounts that host path
+    /// into the container at `container_path`.
+    pub volume: Option<VolumeMount>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VolumeMount {
+    pub device_path: String,
+    pub host_path: String,
+    pub container_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -434,4 +465,65 @@ pub struct PortSpec {
     pub container_port: u16,
     pub host_port: Option<u16>,
     pub protocol: Option<String>,
+}
+
+/// Make sure `device_path` is mounted at `host_path`, creating the
+/// directory if needed. Idempotent — reading `/proc/mounts` short-
+/// circuits when the mount already exists. The agent container runs
+/// with `CAP_SYS_ADMIN` + a `/dev` bind so the `mount` call succeeds.
+///
+/// Hetzner pre-formats the volume as ext4 at create time (we set
+/// `format: "ext4"` in the create request), so no mkfs here.
+async fn ensure_volume_mounted(device_path: &str, host_path: &str) -> Result<()> {
+    tokio::fs::create_dir_all(host_path)
+        .await
+        .with_context(|| format!("creating {host_path}"))?;
+
+    if already_mounted(host_path).await? {
+        return Ok(());
+    }
+
+    // Wait briefly for the block device to show up — after a Hetzner
+    // attach action completes, the udev link under /dev/disk/by-id/
+    // can take a second to appear.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if tokio::fs::metadata(device_path).await.is_ok() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(anyhow!(
+                "block device {device_path} did not appear within 30s"
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    let status = tokio::process::Command::new("mount")
+        .arg("-t")
+        .arg("ext4")
+        .arg(device_path)
+        .arg(host_path)
+        .status()
+        .await
+        .with_context(|| format!("spawning mount {device_path} {host_path}"))?;
+    if !status.success() {
+        return Err(anyhow!(
+            "mount {device_path} → {host_path} failed: {status}"
+        ));
+    }
+    Ok(())
+}
+
+async fn already_mounted(host_path: &str) -> Result<bool> {
+    let contents = tokio::fs::read_to_string("/proc/mounts")
+        .await
+        .context("reading /proc/mounts")?;
+    // Mount lines look like `<device> <mountpoint> <fstype> <opts> 0 0`.
+    // The second column is the mountpoint.
+    Ok(contents.lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        fields.next();
+        fields.next() == Some(host_path)
+    }))
 }

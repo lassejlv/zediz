@@ -37,10 +37,15 @@ write_files:
       Type=simple
       ExecStartPre=-/usr/bin/docker rm -f zediz-agent
       ExecStartPre=/usr/bin/docker pull {agent_image}
+      ExecStartPre=/usr/bin/mkdir -p /var/lib/zediz/volumes
       ExecStart=/usr/bin/docker run --rm --name zediz-agent \
         --network host \
         --env-file /etc/zediz/agent.env \
         -v /var/run/docker.sock:/var/run/docker.sock \
+        -v /dev:/dev \
+        -v /var/lib/zediz/volumes:/var/lib/zediz/volumes:rshared \
+        --cap-add=SYS_ADMIN \
+        --security-opt apparmor=unconfined \
         {agent_image}
       ExecStop=/usr/bin/docker stop zediz-agent
       Restart=always
