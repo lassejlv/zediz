@@ -1,8 +1,10 @@
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use serde::Deserialize;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -35,6 +37,7 @@ pub struct BuildSpec {
 /// is the canonical image published by the railpack maintainers; BuildKit
 /// pulls it on first use.
 const RAILPACK_FRONTEND: &str = "ghcr.io/railwayapp/railpack-frontend";
+const FAILURE_TAIL_LINES: usize = 6;
 
 pub async fn run_build(
     client: &ControlPlaneClient,
@@ -339,6 +342,8 @@ async fn run_logged(
         .stderr
         .take()
         .ok_or_else(|| anyhow!("missing stderr"))?;
+    let stderr_tail = Arc::new(Mutex::new(VecDeque::with_capacity(FAILURE_TAIL_LINES)));
+    let stdout_tail = Arc::new(Mutex::new(VecDeque::with_capacity(FAILURE_TAIL_LINES)));
 
     // Fan-in channel: both pipes push lines to a single batcher that POSTs to
     // `/agent/deployments/:id/logs` every ~500ms or every 32 lines.
@@ -347,10 +352,12 @@ async fn run_logged(
     let tx_out = tx.clone();
     let prefix = format!("[build:{tag}] ");
     let prefix_for_out = prefix.clone();
+    let stdout_tail_for_task = Arc::clone(&stdout_tail);
     tokio::spawn(async move {
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
+            push_tail(&stdout_tail_for_task, &line);
             let _ = tx_out
                 .send(LogLineOut {
                     stream: "stdout".into(),
@@ -361,10 +368,12 @@ async fn run_logged(
         }
     });
     let prefix_for_err = prefix;
+    let stderr_tail_for_task = Arc::clone(&stderr_tail);
     tokio::spawn(async move {
         let reader = BufReader::new(stderr);
         let mut lines = reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
+            push_tail(&stderr_tail_for_task, &line);
             let _ = tx
                 .send(LogLineOut {
                     stream: "stderr".into(),
@@ -418,7 +427,48 @@ async fn run_logged(
     let _ = pusher.await;
 
     if !status.success() {
-        bail!("{tag} exited with {status}");
+        let detail = format_failure_detail(&stderr_tail, &stdout_tail);
+        if detail.is_empty() {
+            bail!("{tag} exited with {status}");
+        }
+        bail!("{tag} exited with {status}: {detail}");
     }
     Ok(())
+}
+
+fn push_tail(tail: &Arc<Mutex<VecDeque<String>>>, line: &str) {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let mut guard = tail.lock().expect("tail lock poisoned");
+    if guard.len() == FAILURE_TAIL_LINES {
+        guard.pop_front();
+    }
+    guard.push_back(trimmed.to_string());
+}
+
+fn format_failure_detail(
+    stderr_tail: &Arc<Mutex<VecDeque<String>>>,
+    stdout_tail: &Arc<Mutex<VecDeque<String>>>,
+) -> String {
+    let preferred = {
+        let stderr = stderr_tail.lock().expect("tail lock poisoned");
+        if stderr.is_empty() {
+            let stdout = stdout_tail.lock().expect("tail lock poisoned");
+            stdout.iter().cloned().collect::<Vec<_>>()
+        } else {
+            stderr.iter().cloned().collect::<Vec<_>>()
+        }
+    };
+
+    preferred
+        .into_iter()
+        .rev()
+        .take(3)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
