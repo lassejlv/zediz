@@ -3,7 +3,10 @@ pub mod routes;
 use anyhow::Result;
 use reqwest::redirect::Policy;
 use sqlx::PgPool;
+use std::collections::BTreeSet;
+use std::net::IpAddr;
 use std::time::Duration;
+use tokio::net::lookup_host;
 
 /// Hostnames currently pointing at a given node, derived from service_domains
 /// joined to running deployments on that node. One entry per live hostname.
@@ -83,10 +86,18 @@ pub fn validate_hostname(h: &str) -> Result<(), String> {
 /// A domain is only considered probeable once its service has a running
 /// deployment; until then it stays `pending`.
 pub async fn refresh_tls_statuses(pool: &PgPool) -> Result<()> {
-    let rows: Vec<(String, String, bool)> = sqlx::query_as(
+    let rows: Vec<(String, String, bool, Option<String>)> = sqlx::query_as(
         "SELECT sd.id, sd.hostname, \
                 EXISTS(SELECT 1 FROM deployments d \
-                       WHERE d.service_id = sd.service_id AND d.status = 'running') AS has_running \
+                       WHERE d.service_id = sd.service_id AND d.status = 'running') AS has_running, \
+                (SELECT n.public_ipv4 \
+                 FROM deployments d \
+                 JOIN nodes n ON n.id = d.node_id \
+                 WHERE d.service_id = sd.service_id \
+                       AND d.status = 'running' \
+                       AND n.public_ipv4 IS NOT NULL \
+                 ORDER BY d.updated_at DESC \
+                 LIMIT 1) AS expected_ip \
          FROM service_domains sd \
          ORDER BY sd.created_at ASC",
     )
@@ -98,7 +109,7 @@ pub async fn refresh_tls_statuses(pool: &PgPool) -> Result<()> {
         .timeout(Duration::from_secs(5))
         .build()?;
 
-    for (id, hostname, has_running) in rows {
+    for (id, hostname, has_running, expected_ip) in rows {
         if !has_running {
             sqlx::query(
                 "UPDATE service_domains SET \
@@ -109,6 +120,44 @@ pub async fn refresh_tls_statuses(pool: &PgPool) -> Result<()> {
             )
             .bind(&id)
             .execute(pool)
+            .await?;
+            continue;
+        }
+
+        let expected_ip = match expected_ip {
+            Some(ip) => ip,
+            None => {
+                mark_failed(pool, &id, "running deployment has no public node IP").await?;
+                continue;
+            }
+        };
+
+        let resolved_ips = match resolve_hostname(&hostname).await {
+            Ok(ips) => ips,
+            Err(err) => {
+                mark_failed(pool, &id, &format!("DNS lookup failed: {err}")).await?;
+                continue;
+            }
+        };
+        if resolved_ips.is_empty() {
+            mark_failed(
+                pool,
+                &id,
+                &format!("DNS does not resolve yet; expected A record to {expected_ip}"),
+            )
+            .await?;
+            continue;
+        }
+
+        if !resolved_ips.iter().any(|ip| ip == &expected_ip) {
+            mark_failed(
+                pool,
+                &id,
+                &format!(
+                    "DNS resolves to {}, but this service is running on {expected_ip}",
+                    resolved_ips.join(", ")
+                ),
+            )
             .await?;
             continue;
         }
@@ -127,24 +176,36 @@ pub async fn refresh_tls_statuses(pool: &PgPool) -> Result<()> {
                 .execute(pool)
                 .await?;
             }
-            Err(err) => {
-                let err = err.to_string();
-                sqlx::query(
-                    "UPDATE service_domains SET \
-                        tls_status = 'failed', \
-                        last_error = $2, \
-                        updated_at = now() \
-                     WHERE id = $1",
-                )
-                .bind(&id)
-                .bind(&err)
-                .execute(pool)
-                .await?;
-            }
+            Err(err) => mark_failed(pool, &id, &format!("HTTPS probe failed: {err}")).await?,
         }
     }
 
     Ok(())
+}
+
+async fn mark_failed(pool: &PgPool, id: &str, err: &str) -> Result<()> {
+    sqlx::query(
+        "UPDATE service_domains SET \
+            tls_status = 'failed', \
+            last_error = $2, \
+            updated_at = now() \
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(err)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn resolve_hostname(hostname: &str) -> Result<Vec<String>> {
+    let addrs = lookup_host((hostname, 443)).await?;
+    let mut uniq = BTreeSet::<String>::new();
+    for addr in addrs {
+        let ip: IpAddr = addr.ip();
+        uniq.insert(ip.to_string());
+    }
+    Ok(uniq.into_iter().collect())
 }
 
 async fn probe_hostname(http: &reqwest::Client, hostname: &str) -> Result<()> {
