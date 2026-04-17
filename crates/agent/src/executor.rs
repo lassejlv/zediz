@@ -46,40 +46,72 @@ impl Executor {
         let body = HeartbeatBody::default();
         let mut resp = self.client.heartbeat(&self.node_token, &body).await?;
         resp.commands.sort_by_key(|cmd| cmd.created_at);
+        let mut metrics_sent = false;
+        let mut rounds = 0usize;
+        loop {
+            let acks = self.execute_commands(resp.commands).await;
 
-        let mut acks: Vec<CommandAck> = Vec::new();
-        for cmd in resp.commands {
-            let ack = self.execute(cmd).await;
-            acks.push(ack);
-        }
+            // Reconcile tracked deployments against Docker so a missed status
+            // POST (network blip, CP restart) doesn't leave a live container
+            // stuck in `pulling` on the CP forever.
+            self.reconcile_tracked().await;
 
-        // Reconcile tracked deployments against Docker so a missed status
-        // POST (network blip, CP restart) doesn't leave a live container
-        // stuck in `pulling` on the CP forever.
-        self.reconcile_tracked().await;
+            // Sample container stats once per tick. If the follow-up heartbeat
+            // returns newly-enqueued commands, we still need to execute them
+            // instead of dropping them after the CP marked them `dispatched`.
+            let metrics = if metrics_sent {
+                Vec::new()
+            } else {
+                metrics_sent = true;
+                self.sample_container_metrics().await
+            };
 
-        // Sample container stats in parallel. bollard's stats with
-        // `stream:false, one_shot:false` waits ~1s for a precpu/cpu pair;
-        // running them concurrently keeps the tick tight.
-        let metrics = self.sample_container_metrics().await;
-
-        // Ship log chunks for tracked deployments.
-        let tracked_ids: Vec<String> = self.tracked.iter().cloned().collect();
-        for deployment_id in tracked_ids {
-            if let Err(e) = self.drain_and_push_logs(&deployment_id).await {
-                tracing::warn!(deployment = %deployment_id, error = ?e, "log scrape failed");
+            // Ship log chunks for tracked deployments.
+            let tracked_ids: Vec<String> = self.tracked.iter().cloned().collect();
+            for deployment_id in tracked_ids {
+                if let Err(e) = self.drain_and_push_logs(&deployment_id).await {
+                    tracing::warn!(deployment = %deployment_id, error = ?e, "log scrape failed");
+                }
             }
-        }
 
-        if !acks.is_empty() || !metrics.is_empty() {
+            if acks.is_empty() && metrics.is_empty() {
+                break;
+            }
+
             let body = HeartbeatBody {
                 acks,
                 container_metrics: metrics,
                 ..Default::default()
             };
-            let _ = self.client.heartbeat(&self.node_token, &body).await;
+            match self.client.heartbeat(&self.node_token, &body).await {
+                Ok(mut next) => {
+                    next.commands.sort_by_key(|cmd| cmd.created_at);
+                    if next.commands.is_empty() {
+                        break;
+                    }
+                    resp = next;
+                }
+                Err(e) => {
+                    tracing::warn!(error = ?e, "follow-up heartbeat failed");
+                    break;
+                }
+            }
+
+            rounds += 1;
+            if rounds >= 8 {
+                tracing::warn!("stopping command drain after 8 follow-up heartbeat rounds");
+                break;
+            }
         }
         Ok(())
+    }
+
+    async fn execute_commands(&mut self, commands: Vec<crate::client::Command>) -> Vec<CommandAck> {
+        let mut acks = Vec::with_capacity(commands.len());
+        for cmd in commands {
+            acks.push(self.execute(cmd).await);
+        }
+        acks
     }
 
     async fn sample_container_metrics(&self) -> Vec<ContainerMetricSample> {

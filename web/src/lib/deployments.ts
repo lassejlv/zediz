@@ -1,7 +1,31 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { queryOptions, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from './api';
 import type { SemanticStatus } from '@/components/ui';
 import type { DeploymentStatus, DeploymentSummary } from './types';
+
+export interface MetricsSample {
+  ts: string;
+  cpu_percent: number;
+  memory_bytes: number;
+  memory_limit_bytes: number | null;
+  rx_bytes: number;
+  tx_bytes: number;
+  /** Bytes/sec since the previous sample. Null on the first row
+   * returned or when the counter reset (container was recreated). */
+  rx_rate: number | null;
+  tx_rate: number | null;
+}
+
+export function deploymentMetricsQuery(deploymentId: string, minutes: number) {
+  return queryOptions({
+    queryKey: ['deployment', deploymentId, 'metrics', minutes] as const,
+    queryFn: ({ signal }) =>
+      api<MetricsSample[]>(
+        `/deployments/${encodeURIComponent(deploymentId)}/metrics?minutes=${minutes}`,
+        { signal },
+      ),
+  });
+}
 
 /**
  * Map a deployment's lifecycle status to a UI tone + whether it should pulse.

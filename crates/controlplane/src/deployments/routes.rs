@@ -1,6 +1,8 @@
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::agent::commands::{self, CommandKind};
 use crate::agent::routes::{tail_logs, TailQuery};
@@ -15,6 +17,7 @@ pub fn router() -> Router<AppState> {
         .route("/deployments/:id/stop", post(stop))
         .route("/deployments/:id/restart", post(restart))
         .route("/deployments/:id/logs", get(logs))
+        .route("/deployments/:id/metrics", get(metrics_history))
 }
 
 async fn show(
@@ -122,4 +125,92 @@ async fn logs(
     q: Query<TailQuery>,
 ) -> ApiResult<impl axum::response::IntoResponse> {
     tail_logs(State(state), auth, Path(id), q).await
+}
+
+#[derive(Deserialize, Default)]
+struct MetricsQuery {
+    /// Window in minutes. Capped at the server's retention (60) so the
+    /// agent doesn't accidentally ask for data that no longer exists.
+    #[serde(default)]
+    minutes: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct MetricsSample {
+    ts: DateTime<Utc>,
+    cpu_percent: f32,
+    memory_bytes: i64,
+    memory_limit_bytes: Option<i64>,
+    rx_bytes: i64,
+    tx_bytes: i64,
+    /// Bytes per second since the previous sample. `None` on the first
+    /// row (no prior sample to diff against) and when the counter
+    /// resets — the agent reports cumulative values, so container
+    /// recreates wrap back to 0.
+    rx_rate: Option<f64>,
+    tx_rate: Option<f64>,
+}
+
+#[derive(sqlx::FromRow)]
+struct MetricsRow {
+    ts: DateTime<Utc>,
+    cpu_percent: f32,
+    memory_bytes: i64,
+    memory_limit_bytes: Option<i64>,
+    rx_bytes: i64,
+    tx_bytes: i64,
+    rx_rate: Option<f64>,
+    tx_rate: Option<f64>,
+}
+
+async fn metrics_history(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<String>,
+    Query(q): Query<MetricsQuery>,
+) -> ApiResult<Json<Vec<MetricsSample>>> {
+    deployments::authorize(state.pool(), &id, &auth.user_id).await?;
+
+    let minutes = q.minutes.unwrap_or(60).clamp(1, 60);
+
+    let rows: Vec<MetricsRow> = sqlx::query_as(
+        "SELECT ts, cpu_percent, memory_bytes, memory_limit_bytes, rx_bytes, tx_bytes, \
+                CASE WHEN prev_rx IS NULL OR rx_bytes < prev_rx OR dt_secs <= 0 \
+                     THEN NULL \
+                     ELSE (rx_bytes - prev_rx)::float8 / dt_secs END AS rx_rate, \
+                CASE WHEN prev_tx IS NULL OR tx_bytes < prev_tx OR dt_secs <= 0 \
+                     THEN NULL \
+                     ELSE (tx_bytes - prev_tx)::float8 / dt_secs END AS tx_rate \
+         FROM ( \
+             SELECT ts, cpu_percent, memory_bytes, memory_limit_bytes, \
+                    rx_bytes, tx_bytes, \
+                    LAG(rx_bytes) OVER w AS prev_rx, \
+                    LAG(tx_bytes) OVER w AS prev_tx, \
+                    EXTRACT(EPOCH FROM ts - LAG(ts) OVER w) AS dt_secs \
+             FROM deployment_metrics \
+             WHERE deployment_id = $1 \
+               AND ts >= now() - ($2 || ' minutes')::interval \
+             WINDOW w AS (ORDER BY ts) \
+         ) ordered \
+         ORDER BY ts ASC",
+    )
+    .bind(&id)
+    .bind(minutes)
+    .fetch_all(state.pool())
+    .await?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| MetricsSample {
+                ts: r.ts,
+                cpu_percent: r.cpu_percent,
+                memory_bytes: r.memory_bytes,
+                memory_limit_bytes: r.memory_limit_bytes,
+                rx_bytes: r.rx_bytes,
+                tx_bytes: r.tx_bytes,
+                rx_rate: r.rx_rate,
+                tx_rate: r.tx_rate,
+            })
+            .collect(),
+    ))
 }

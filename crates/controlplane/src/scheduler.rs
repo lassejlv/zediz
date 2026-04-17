@@ -53,6 +53,7 @@ pub fn spawn(state: AppState) -> SchedulerHandle {
         let mut autoscale_counter: u32 = 0;
         let mut tls_probe_counter: u32 = 0;
         let mut reap_counter: u32 = 0;
+        let mut metrics_trim_counter: u32 = 0;
         loop {
             if let Err(e) = tick_once(&state_for_task).await {
                 tracing::error!(error = ?e, "scheduler tick failed");
@@ -79,10 +80,31 @@ pub fn spawn(state: AppState) -> SchedulerHandle {
                     tracing::warn!(error = ?e, "reap_stale_deployments failed");
                 }
             }
+            // Prune old deployment_metrics samples every ~150 ticks
+            // (~5 minutes). The Metrics tab only loads the last hour so
+            // anything older is dead weight.
+            metrics_trim_counter = metrics_trim_counter.wrapping_add(1);
+            if metrics_trim_counter.is_multiple_of(150) {
+                if let Err(e) = trim_metrics_history(&state_for_task).await {
+                    tracing::warn!(error = ?e, "trim_metrics_history failed");
+                }
+            }
             handle_for_task.wait(tick).await;
         }
     });
     handle
+}
+
+/// How much deployment_metrics history to keep. Matches what the Metrics
+/// tab can ask for and keeps table size bounded.
+const METRICS_HISTORY_MINUTES: i64 = 60;
+
+async fn trim_metrics_history(state: &AppState) -> Result<()> {
+    sqlx::query("DELETE FROM deployment_metrics WHERE ts < now() - ($1 || ' minutes')::interval")
+        .bind(METRICS_HISTORY_MINUTES)
+        .execute(state.pool())
+        .await?;
+    Ok(())
 }
 
 /// How long a deployment may sit in `pulling` or `starting` before the

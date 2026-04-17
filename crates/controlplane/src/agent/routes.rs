@@ -218,8 +218,10 @@ async fn heartbeat(
 
     for sample in req.container_metrics {
         // Scope the write to deployments owned by this node to prevent a
-        // compromised agent from poisoning other nodes' rows.
-        if let Err(e) = sqlx::query(
+        // compromised agent from poisoning other nodes' rows. The UPDATE's
+        // rows_affected tells us whether this node actually owns the
+        // deployment; only then do we persist the history row.
+        let update_res = sqlx::query(
             "UPDATE deployments \
              SET runtime_metrics = $1 \
              WHERE id = $2 AND node_id = $3",
@@ -228,12 +230,45 @@ async fn heartbeat(
         .bind(&sample.deployment_id)
         .bind(&claims.node_id)
         .execute(state.pool())
+        .await;
+
+        match update_res {
+            Ok(res) if res.rows_affected() == 0 => continue,
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(
+                    deployment = %sample.deployment_id,
+                    error = ?e,
+                    "store runtime_metrics",
+                );
+                continue;
+            }
+        }
+
+        // Append to the time-series history. ON CONFLICT DO NOTHING guards
+        // against a duplicate (deployment_id, ts) if the agent retries a
+        // heartbeat.
+        if let Err(e) = sqlx::query(
+            "INSERT INTO deployment_metrics \
+                (deployment_id, ts, cpu_percent, memory_bytes, \
+                 memory_limit_bytes, rx_bytes, tx_bytes) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             ON CONFLICT (deployment_id, ts) DO NOTHING",
+        )
+        .bind(&sample.deployment_id)
+        .bind(sample.ts)
+        .bind(sample.cpu_percent)
+        .bind(sample.memory_bytes)
+        .bind(sample.memory_limit_bytes)
+        .bind(sample.rx_bytes)
+        .bind(sample.tx_bytes)
+        .execute(state.pool())
         .await
         {
             tracing::warn!(
                 deployment = %sample.deployment_id,
                 error = ?e,
-                "store runtime_metrics",
+                "insert deployment_metrics",
             );
         }
     }
@@ -264,8 +299,8 @@ async fn deployment_status(
         return Err(ApiError::Validation("invalid status".into()));
     }
 
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT d.service_id FROM deployments d \
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT d.service_id, d.status FROM deployments d \
          JOIN services s ON s.id = d.service_id \
          JOIN projects p ON p.id = s.project_id \
          WHERE d.id = $1 AND (d.node_id = $2 OR p.workspace_id = $3)",
@@ -275,7 +310,9 @@ async fn deployment_status(
     .bind(&claims.workspace_id)
     .fetch_optional(state.pool())
     .await?;
-    let service_id = row.ok_or(ApiError::NotFound)?.0;
+    let (service_id, previous_status) = row.ok_or(ApiError::NotFound)?;
+    let status_changed = previous_status != update.status;
+    let entered_running = status_changed && update.status == "running";
 
     let started_at = if update.status == "running" {
         Some(Utc::now())
@@ -322,7 +359,7 @@ async fn deployment_status(
     // cut-over, and waiting until now keeps the old upstream live for the
     // whole image-pull window so Caddy never sees an empty route set.
     let mut affected_nodes: BTreeSet<String> = BTreeSet::new();
-    if update.status == "running" {
+    if entered_running {
         match crate::deployments::retire_superseded_running(
             state.pool(),
             &service_id,
@@ -340,10 +377,12 @@ async fn deployment_status(
             }
         }
     }
-    if matches!(
-        update.status.as_str(),
-        "running" | "stopped" | "errored" | "failing"
-    ) {
+    if status_changed
+        && matches!(
+            update.status.as_str(),
+            "running" | "stopped" | "errored" | "failing"
+        )
+    {
         affected_nodes.insert(claims.node_id.clone());
     }
     for node_id in affected_nodes {
