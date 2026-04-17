@@ -123,6 +123,30 @@ impl ControlPlaneClient {
         }
         Ok(())
     }
+
+    pub async fn report_build_status(
+        &self,
+        node_token: &str,
+        build_id: &str,
+        body: &BuildStatusBody,
+    ) -> Result<()> {
+        let res = self
+            .http
+            .post(format!(
+                "{}/api/v1/agent/builds/{build_id}/status",
+                self.base
+            ))
+            .bearer_auth(node_token)
+            .json(body)
+            .send()
+            .await?;
+        if !res.status().is_success() && res.status() != StatusCode::NOT_FOUND {
+            let s = res.status();
+            let t = res.text().await.unwrap_or_default();
+            return Err(anyhow!("build status: {s}: {t}"));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,4 +199,17 @@ pub struct LogLineOut {
     pub stream: String,
     pub ts: DateTime<Utc>,
     pub line: String,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct BuildStatusBody {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_tag: Option<String>,
 }

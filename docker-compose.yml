@@ -35,15 +35,34 @@ services:
     environment:
       CADDY_SITE: ${CADDY_SITE:-zediz.dev}
       CADDY_EMAIL: ${CADDY_EMAIL:-admin@zediz.dev}
+      REGISTRY_SITE: ${REGISTRY_SITE:-registry.zediz.dev}
     volumes:
       - caddy_data:/data
       - caddy_config:/config
     networks:
       - zediz
 
+  # Self-hosted Docker Registry for git-service build outputs. Basic auth via
+  # htpasswd — generate with:
+  #   docker run --rm httpd:2 htpasswd -Bbn <user> '<password>' > docker/registry-htpasswd
+  registry:
+    image: registry:2
+    restart: unless-stopped
+    environment:
+      REGISTRY_AUTH: htpasswd
+      REGISTRY_AUTH_HTPASSWD_REALM: zediz-registry
+      REGISTRY_AUTH_HTPASSWD_PATH: /auth/htpasswd
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+    volumes:
+      - registry_data:/var/lib/registry
+      - ./docker/registry-htpasswd:/auth/htpasswd:ro
+    networks:
+      - zediz
+
 volumes:
   caddy_data:
   caddy_config:
+  registry_data:
 
 networks:
   zediz:

@@ -50,12 +50,20 @@ export function serviceQuery(
 export interface CreateServiceInput {
   slug: string;
   name: string;
-  image_ref: string;
+  source?: 'image' | 'git';
+  image_ref?: string;
   env_vars?: EnvVars;
   ports?: PortMap[];
   resources?: Resources;
   replicas?: number;
   restart_policy?: RestartPolicy;
+  git_repo?: string;
+  git_branch?: string;
+  dockerfile_path?: string;
+  build_context?: string;
+  registry_repo?: string;
+  github_credential_id?: string;
+  registry_credential_id?: string;
 }
 
 export function useCreateService(workspaceSlug: string, projectSlug: string) {

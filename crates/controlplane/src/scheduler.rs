@@ -8,12 +8,18 @@ use serde_json::{json, Value as JsonValue};
 use sqlx::PgPool;
 use tokio::sync::Notify;
 
-use crate::agent::commands::{self, CommandKind};
+use crate::agent::commands::{self, BuildPayload, CommandKind, RegistryAuth};
 use crate::credentials;
 use crate::provisioner::hetzner as hetzner_provisioner;
 use crate::services::{PortMap, Resources};
 use crate::ssh_keys;
 use crate::state::AppState;
+
+/// Small envelope reserved per in-flight build so concurrent builds don't
+/// starve the node out of capacity for runtime containers.
+const BUILD_CPU_MILLIS: u32 = 1000;
+const BUILD_MEMORY_MB: u32 = 1024;
+const BUILD_DISK_MB: u32 = 2048;
 
 /// Handle used to nudge the scheduler to wake early when new work arrives.
 #[derive(Clone, Default)]
@@ -70,6 +76,17 @@ pub fn spawn(state: AppState) -> SchedulerHandle {
 }
 
 async fn tick_once(state: &AppState) -> Result<()> {
+    // Kick off queued builds first — their success flips the deployment back
+    // to 'pending' and lets the same tick pick it up on the next pass.
+    let queued = fetch_queued_builds(state.pool()).await?;
+    for b in queued {
+        let build_id = b.build_id.clone();
+        if let Err(e) = dispatch_build(state, b).await {
+            tracing::error!(build = %build_id, error = ?e, "build dispatch failed");
+            fail_build(state.pool(), &build_id, &e.to_string()).await?;
+        }
+    }
+
     let pending = fetch_pending(state.pool()).await?;
     for p in pending {
         if let Err(e) = place_and_run(state, &p).await {
@@ -85,6 +102,280 @@ async fn tick_once(state: &AppState) -> Result<()> {
         }
     }
     refresh_idle_since(state.pool()).await?;
+    Ok(())
+}
+
+struct QueuedBuild {
+    build_id: String,
+    deployment_id: String,
+    service_id: String,
+    workspace_id: String,
+    git_repo: String,
+    git_branch: String,
+    dockerfile_path: String,
+    build_context: String,
+    registry_repo: Option<String>,
+    github_credential_id: Option<String>,
+    registry_credential_id: Option<String>,
+}
+
+async fn fetch_queued_builds(pool: &PgPool) -> Result<Vec<QueuedBuild>> {
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        build_id: String,
+        deployment_id: Option<String>,
+        service_id: String,
+        workspace_id: String,
+        git_repo: Option<String>,
+        git_branch: Option<String>,
+        dockerfile_path: Option<String>,
+        build_context: Option<String>,
+        registry_repo: Option<String>,
+        github_credential_id: Option<String>,
+        registry_credential_id: Option<String>,
+    }
+
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT b.id AS build_id, b.deployment_id, s.id AS service_id, w.id AS workspace_id, \
+                s.git_repo, s.git_branch, s.dockerfile_path, s.build_context, s.registry_repo, \
+                s.github_credential_id, s.registry_credential_id \
+         FROM builds b \
+         JOIN services s ON s.id = b.service_id \
+         JOIN projects p ON p.id = s.project_id \
+         JOIN workspaces w ON w.id = p.workspace_id \
+         WHERE b.status = 'queued' \
+         ORDER BY b.created_at ASC \
+         LIMIT 10",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        let Some(deployment_id) = r.deployment_id else {
+            continue;
+        };
+        let Some(git_repo) = r.git_repo else {
+            continue;
+        };
+        out.push(QueuedBuild {
+            build_id: r.build_id,
+            deployment_id,
+            service_id: r.service_id,
+            workspace_id: r.workspace_id,
+            git_repo,
+            git_branch: r.git_branch.unwrap_or_else(|| "main".into()),
+            dockerfile_path: r.dockerfile_path.unwrap_or_else(|| "Dockerfile".into()),
+            build_context: r.build_context.unwrap_or_else(|| ".".into()),
+            registry_repo: r.registry_repo,
+            github_credential_id: r.github_credential_id,
+            registry_credential_id: r.registry_credential_id,
+        });
+    }
+    Ok(out)
+}
+
+async fn dispatch_build(state: &AppState, b: QueuedBuild) -> Result<()> {
+    let registry_cred_id = b
+        .registry_credential_id
+        .clone()
+        .ok_or_else(|| anyhow!("git service missing registry credential — set one in Settings"))?;
+    let registry_cred = credentials::fetch_decrypted(
+        state.pool(),
+        state.master_key(),
+        &b.workspace_id,
+        &registry_cred_id,
+    )
+    .await?
+    .ok_or_else(|| anyhow!("registry credential {registry_cred_id} not found"))?;
+    if registry_cred.kind != "registry" {
+        return Err(anyhow!(
+            "credential {registry_cred_id} is not a registry credential"
+        ));
+    }
+    let registry_meta = RegistryMeta::from_metadata(&registry_cred.metadata)?;
+
+    // Derive a repo name if the user didn't set one.
+    let registry_repo = b.registry_repo.clone().unwrap_or_else(|| {
+        format!("{host}/{ws}/{svc}", host = registry_meta.url, ws = b.workspace_id, svc = b.service_id)
+    });
+    let image_tag = format!("{registry_repo}:build-{id}", id = b.build_id);
+
+    let github_pat = match &b.github_credential_id {
+        Some(id) => {
+            let cred = credentials::fetch_decrypted(
+                state.pool(),
+                state.master_key(),
+                &b.workspace_id,
+                id,
+            )
+            .await?
+            .ok_or_else(|| anyhow!("github credential {id} not found"))?;
+            if cred.kind != "github_pat" {
+                return Err(anyhow!("credential {id} is not a github_pat"));
+            }
+            Some(cred.secret)
+        }
+        None => None,
+    };
+
+    // Pick a builder node; any ready node works if no explicit builder pool.
+    let node = pick_builder_node(state.pool(), &b.workspace_id)
+        .await?
+        .ok_or_else(|| anyhow!("no ready node available to build on — provision one first"))?;
+
+    // Reserve + claim the build.
+    let mut tx = state.pool().begin().await?;
+    sqlx::query(
+        "INSERT INTO node_allocations (node_id, deployment_id, cpu_millis, memory_mb, disk_mb) \
+         VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (node_id, deployment_id) DO NOTHING",
+    )
+    .bind(&node.id)
+    .bind(&b.deployment_id)
+    .bind(BUILD_CPU_MILLIS as i32)
+    .bind(BUILD_MEMORY_MB as i32)
+    .bind(BUILD_DISK_MB as i32)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE builds SET node_id = $1, status = 'cloning', started_at = now(), \
+                            image_tag = $2, updated_at = now() \
+         WHERE id = $3 AND status = 'queued'",
+    )
+    .bind(&node.id)
+    .bind(&image_tag)
+    .bind(&b.build_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    let payload = commands::build_payload(&BuildPayload {
+        build_id: &b.build_id,
+        deployment_id: &b.deployment_id,
+        service_id: &b.service_id,
+        git_repo: &b.git_repo,
+        git_branch: &b.git_branch,
+        dockerfile_path: &b.dockerfile_path,
+        build_context: &b.build_context,
+        image_tag: &image_tag,
+        github_pat: github_pat.as_deref(),
+        registry: Some(RegistryAuth {
+            url: &registry_meta.url,
+            username: &registry_meta.username,
+            password: &registry_cred.secret,
+        }),
+    });
+
+    commands::enqueue(
+        state.pool(),
+        &node.id,
+        Some(&b.deployment_id),
+        CommandKind::Build,
+        payload,
+    )
+    .await?;
+    Ok(())
+}
+
+struct RegistryMeta {
+    url: String,
+    username: String,
+}
+
+impl RegistryMeta {
+    fn from_metadata(m: &JsonValue) -> Result<Self> {
+        let url = m
+            .get("url")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("registry credential metadata missing 'url'"))?;
+        let username = m
+            .get("username")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("registry credential metadata missing 'username'"))?;
+        Ok(Self {
+            url: url.to_string(),
+            username: username.to_string(),
+        })
+    }
+}
+
+async fn pick_builder_node(pool: &PgPool, workspace_id: &str) -> Result<Option<NodeCapacity>> {
+    // If the workspace has any node tagged `role=builder`, prefer those
+    // exclusively. Otherwise any ready node will do.
+    let rows: Vec<NodeCapacity> = sqlx::query_as(
+        "SELECT n.id, n.provider, n.total_cpu_millis, n.total_memory_mb, n.total_disk_mb, \
+                COALESCE(SUM(a.cpu_millis), 0)::bigint AS used_cpu_millis, \
+                COALESCE(SUM(a.memory_mb), 0)::bigint AS used_memory_mb, \
+                COALESCE(SUM(a.disk_mb), 0)::bigint AS used_disk_mb \
+         FROM nodes n \
+         LEFT JOIN node_allocations a ON a.node_id = n.id \
+         WHERE n.workspace_id = $1 AND n.status = 'ready' \
+         AND ( \
+             (n.labels->>'role') = 'builder' \
+             OR NOT EXISTS ( \
+                 SELECT 1 FROM nodes n2 \
+                 WHERE n2.workspace_id = $1 \
+                   AND n2.status = 'ready' \
+                   AND (n2.labels->>'role') = 'builder' \
+             ) \
+         ) \
+         GROUP BY n.id \
+         ORDER BY n.created_at ASC",
+    )
+    .bind(workspace_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut fits: Vec<(NodeCapacity, i64)> = rows
+        .into_iter()
+        .filter_map(|row| {
+            let free_cpu = row.total_cpu_millis as i64 - row.used_cpu_millis.unwrap_or(0);
+            let free_mem = row.total_memory_mb as i64 - row.used_memory_mb.unwrap_or(0);
+            let free_disk = row.total_disk_mb as i64 - row.used_disk_mb.unwrap_or(0);
+            if free_cpu >= BUILD_CPU_MILLIS as i64
+                && free_mem >= BUILD_MEMORY_MB as i64
+                && free_disk >= BUILD_DISK_MB as i64
+            {
+                Some((row, free_mem))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    fits.sort_by_key(|(_, free_mem)| *free_mem);
+    Ok(fits.into_iter().next().map(|(n, _)| n))
+}
+
+async fn fail_build(pool: &PgPool, build_id: &str, reason: &str) -> Result<()> {
+    sqlx::query(
+        "UPDATE builds SET status = 'failed', reason = $1, finished_at = now(), \
+                            updated_at = now() \
+         WHERE id = $2 AND status NOT IN ('succeeded','failed','cancelled')",
+    )
+    .bind(reason)
+    .bind(build_id)
+    .execute(pool)
+    .await?;
+    // Mirror the failure onto the deployment the build was for.
+    sqlx::query(
+        "UPDATE deployments SET status = 'errored', reason = $1, \
+                                 stopped_at = now(), updated_at = now() \
+         WHERE id = (SELECT deployment_id FROM builds WHERE id = $2) \
+           AND status = 'building'",
+    )
+    .bind(reason)
+    .bind(build_id)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "DELETE FROM node_allocations \
+         WHERE deployment_id = (SELECT deployment_id FROM builds WHERE id = $1)",
+    )
+    .bind(build_id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

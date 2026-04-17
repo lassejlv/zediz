@@ -1,0 +1,2 @@
+# Generate registry-htpasswd here:
+#   docker run --rm httpd:2 htpasswd -Bbn <user> '<password>' > docker/registry-htpasswd

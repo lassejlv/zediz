@@ -23,3 +23,13 @@
 		file_server
 	}
 }
+
+# Self-hosted Docker Registry fronted by Caddy so TLS is automatic. The
+# registry container enforces basic auth via htpasswd — Caddy just passes the
+# Authorization header through.
+{$REGISTRY_SITE:registry.zediz.dev} {
+	encode gzip zstd
+	reverse_proxy registry:5000 {
+		flush_interval -1
+	}
+}

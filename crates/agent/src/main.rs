@@ -3,6 +3,7 @@ use clap::Parser;
 use std::time::Duration;
 use zediz_common::telemetry;
 
+mod build;
 mod caddy;
 mod client;
 mod docker;

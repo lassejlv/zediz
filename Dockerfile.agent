@@ -13,8 +13,23 @@ RUN cargo build --release -p zediz-agent \
  && strip target/release/zediz-agent
 
 FROM debian:bookworm-slim
+# Runtime deps: ca-certs, git (for clone), docker CLI + buildx plugin (for
+# building git services). The daemon itself runs on the host; we talk to it
+# via the mounted /var/run/docker.sock.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates \
+ && apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg git \
+ && install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://download.docker.com/linux/debian/gpg \
+        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+ && chmod a+r /etc/apt/keyrings/docker.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+        https://download.docker.com/linux/debian bookworm stable" \
+        > /etc/apt/sources.list.d/docker.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+        docker-ce-cli docker-buildx-plugin \
+ && apt-get purge -y --auto-remove gnupg curl \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /build/target/release/zediz-agent /usr/local/bin/zediz-agent
 ENTRYPOINT ["/usr/local/bin/zediz-agent"]

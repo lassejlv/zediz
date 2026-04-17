@@ -18,6 +18,7 @@ export function deploymentTone(s: DeploymentStatus | undefined): {
     case 'pending':
     case 'placing':
       return { tone: 'info', pulse: true };
+    case 'building':
     case 'pulling':
     case 'starting':
     case 'failing':

@@ -385,10 +385,10 @@ w/$workspaceSlug/
 **Agent protocol note**: Phase 4 ships an HTTP-polling agent (register → heartbeat every 10s → executes commands → posts status). WebSocket upgrade deferred to a later polish phase.
 
 ### Phase 5 — Registry + git builds
-- [ ] Self-hosted registry deployment playbook
-- [ ] Builder pool labels, build agent commands
-- [ ] Git service type, webhook-less manual deploy first
-- [ ] Build logs streaming
+- [x] Self-hosted registry deployment playbook _(distribution:2 service added to docker-compose.yml behind Caddy at `REGISTRY_SITE`, htpasswd basic auth; README/.env.example document the generation step)_
+- [x] Builder pool labels, build agent commands _(new `build` command kind + scheduler `tick_builds` + `pick_builder_node` that prefers nodes labeled `role=builder` and falls back to any ready node)_
+- [x] Git service type, webhook-less manual deploy first _(services.source = 'image' | 'git'; deploy endpoint creates a `builds` row + deployment in 'building' state; on success the scheduler dispatches `pull_and_run` using the pushed image tag)_
+- [x] Build logs streaming _(agent streams buildx stdout/stderr as `[build:<tag>] …` lines through the existing `/agent/deployments/:id/logs` → `deployment_logs` → SSE path, so the Logs tab shows build then runtime in one stream)_
 
 ### Phase 6 — Ingress + domains
 - [ ] Caddy on each node managed via admin API

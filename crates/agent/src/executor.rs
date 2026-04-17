@@ -80,8 +80,18 @@ impl Executor {
                 Ok(()) => ok(id),
                 Err(e) => err(id, e.to_string()),
             },
+            "build" => match self.handle_build(cmd).await {
+                Ok(()) => ok(id),
+                Err(e) => err(id, e.to_string()),
+            },
             other => err(id, format!("unsupported command kind: {other}")),
         }
+    }
+
+    async fn handle_build(&mut self, cmd: crate::client::Command) -> anyhow::Result<()> {
+        let spec: crate::build::BuildSpec = serde_json::from_value(cmd.payload)
+            .map_err(|e| anyhow::anyhow!("bad build payload: {e}"))?;
+        crate::build::run_build(&self.client, &self.node_token, spec).await
     }
 
     async fn handle_update_routes(&mut self, cmd: crate::client::Command) -> Result<()> {

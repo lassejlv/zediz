@@ -87,23 +87,34 @@ export type EnvVars = Record<string, string>;
 
 export type RestartPolicy = 'no' | 'on-failure' | 'always';
 
+export type ServiceSource = 'image' | 'git';
+
 export interface ServiceSummary {
   id: string;
   slug: string;
   name: string;
-  source: string;
+  source: ServiceSource;
   image_ref: string | null;
   env_vars: EnvVars;
   ports: PortMap[];
   resources: Resources;
   replicas: number;
   restart_policy: RestartPolicy;
+  git_repo: string | null;
+  git_branch: string | null;
+  git_commit: string | null;
+  dockerfile_path: string | null;
+  build_context: string | null;
+  registry_repo: string | null;
+  github_credential_id: string | null;
+  registry_credential_id: string | null;
   created_at: string;
   updated_at: string;
 }
 
 export type DeploymentStatus =
   | 'pending'
+  | 'building'
   | 'placing'
   | 'pulling'
   | 'starting'
@@ -111,6 +122,31 @@ export type DeploymentStatus =
   | 'failing'
   | 'stopped'
   | 'errored';
+
+export type BuildStatus =
+  | 'queued'
+  | 'cloning'
+  | 'building'
+  | 'pushing'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled';
+
+export interface BuildSummary {
+  id: string;
+  service_id: string;
+  deployment_id: string | null;
+  node_id: string | null;
+  status: BuildStatus;
+  git_commit: string | null;
+  image_digest: string | null;
+  image_tag: string | null;
+  reason: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  updated_at: string;
+}
 
 export interface DeploymentSummary {
   id: string;

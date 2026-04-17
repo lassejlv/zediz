@@ -22,6 +22,7 @@ pub fn router() -> Router<AppState> {
         .route("/agent/deployments/:id/status", post(deployment_status))
         .route("/agent/deployments/:id/logs", post(push_logs))
         .route("/agent/deployments/:id/log-tail", get(tail_logs))
+        .route("/agent/builds/:id/status", post(build_status))
 }
 
 #[derive(Deserialize)]
@@ -407,6 +408,126 @@ pub async fn tail_logs(
     });
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+#[derive(Deserialize)]
+struct BuildStatusUpdate {
+    status: String,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    git_commit: Option<String>,
+    #[serde(default)]
+    image_digest: Option<String>,
+    #[serde(default)]
+    image_tag: Option<String>,
+}
+
+/// Agent → CP build progress. Accepted transitions:
+///   queued → cloning → building → pushing → succeeded
+///                                         → failed (from any)
+/// On `succeeded` we write the pushed tag back to the service + deployment and
+/// flip the deployment to `pending` so the scheduler dispatches `pull_and_run`.
+async fn build_status(
+    State(state): State<AppState>,
+    NodeAuth { claims }: NodeAuth,
+    Path(build_id): Path<String>,
+    Json(update): Json<BuildStatusUpdate>,
+) -> ApiResult<()> {
+    if !matches!(
+        update.status.as_str(),
+        "cloning" | "building" | "pushing" | "succeeded" | "failed"
+    ) {
+        return Err(ApiError::Validation("invalid build status".into()));
+    }
+
+    let build = crate::builds::fetch_by_id(state.pool(), &build_id).await?;
+    // Enforce that the reporting node is the one the build was dispatched to.
+    if build.node_id.as_deref() != Some(&claims.node_id) {
+        return Err(ApiError::Unauthorized);
+    }
+
+    let terminal = matches!(update.status.as_str(), "succeeded" | "failed");
+    sqlx::query(
+        "UPDATE builds SET \
+            status = $1, \
+            reason = COALESCE($2, reason), \
+            git_commit = COALESCE($3, git_commit), \
+            image_digest = COALESCE($4, image_digest), \
+            image_tag = COALESCE($5, image_tag), \
+            finished_at = CASE WHEN $6 THEN now() ELSE finished_at END, \
+            updated_at = now() \
+         WHERE id = $7",
+    )
+    .bind(&update.status)
+    .bind(update.reason.as_deref())
+    .bind(update.git_commit.as_deref())
+    .bind(update.image_digest.as_deref())
+    .bind(update.image_tag.as_deref())
+    .bind(terminal)
+    .bind(&build_id)
+    .execute(state.pool())
+    .await?;
+
+    let Some(deployment_id) = build.deployment_id.clone() else {
+        return Ok(());
+    };
+
+    match update.status.as_str() {
+        "succeeded" => {
+            let image_tag = update.image_tag.or(build.image_tag.clone()).ok_or_else(|| {
+                ApiError::Validation("succeeded build must include image_tag".into())
+            })?;
+            if let Some(commit) = update.git_commit.as_deref() {
+                sqlx::query("UPDATE services SET git_commit = $1, updated_at = now() WHERE id = $2")
+                    .bind(commit)
+                    .bind(&build.service_id)
+                    .execute(state.pool())
+                    .await?;
+            }
+            sqlx::query("UPDATE services SET image_ref = $1, updated_at = now() WHERE id = $2")
+                .bind(&image_tag)
+                .bind(&build.service_id)
+                .execute(state.pool())
+                .await?;
+            sqlx::query(
+                "UPDATE deployments SET image_ref = $1, status = 'pending', \
+                                        reason = 'build succeeded', updated_at = now() \
+                 WHERE id = $2",
+            )
+            .bind(&image_tag)
+            .bind(&deployment_id)
+            .execute(state.pool())
+            .await?;
+            // Release the small build reservation so pull_and_run can pick a runtime node.
+            sqlx::query("DELETE FROM node_allocations WHERE deployment_id = $1")
+                .bind(&deployment_id)
+                .execute(state.pool())
+                .await?;
+            crate::scheduler::nudge(&state);
+        }
+        "failed" => {
+            let reason = update
+                .reason
+                .unwrap_or_else(|| "build failed".to_string());
+            sqlx::query(
+                "UPDATE deployments SET status = 'errored', reason = $1, \
+                                        stopped_at = now(), updated_at = now() \
+                 WHERE id = $2",
+            )
+            .bind(&reason)
+            .bind(&deployment_id)
+            .execute(state.pool())
+            .await?;
+            sqlx::query("DELETE FROM node_allocations WHERE deployment_id = $1")
+                .bind(&deployment_id)
+                .execute(state.pool())
+                .await?;
+        }
+        _ => {}
+    }
+
+    Ok(())
 }
 
 fn log_event(id: i64, stream: &str, ts: &DateTime<Utc>, line: &str) -> Event {

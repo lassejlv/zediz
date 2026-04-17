@@ -9,6 +9,7 @@ use zediz_common::telemetry;
 
 mod agent;
 mod auth;
+mod builds;
 mod config;
 mod credentials;
 mod crypto;
@@ -79,6 +80,7 @@ fn router(state: AppState) -> Router {
         .merge(ssh_keys::routes::router())
         .merge(projects::routes::router())
         .merge(services::routes::router())
+        .merge(builds::routes::router())
         .merge(nodes::routes::router())
         .merge(deployments::routes::router())
         .merge(domains::routes::router())

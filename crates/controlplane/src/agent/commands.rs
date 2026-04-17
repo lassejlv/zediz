@@ -16,6 +16,7 @@ pub enum CommandKind {
     Drain,
     Prune,
     UpdateRoutes,
+    Build,
 }
 
 impl CommandKind {
@@ -28,6 +29,7 @@ impl CommandKind {
             CommandKind::Drain => "drain",
             CommandKind::Prune => "prune",
             CommandKind::UpdateRoutes => "update_routes",
+            CommandKind::Build => "build",
         }
     }
 }
@@ -131,5 +133,42 @@ pub fn pull_and_run_payload(
         "ports": ports,
         "cpu_millis": cpu_millis,
         "memory_mb": memory_mb,
+    })
+}
+
+pub struct BuildPayload<'a> {
+    pub build_id: &'a str,
+    pub deployment_id: &'a str,
+    pub service_id: &'a str,
+    pub git_repo: &'a str,
+    pub git_branch: &'a str,
+    pub dockerfile_path: &'a str,
+    pub build_context: &'a str,
+    pub image_tag: &'a str,
+    pub github_pat: Option<&'a str>,
+    pub registry: Option<RegistryAuth<'a>>,
+}
+
+pub struct RegistryAuth<'a> {
+    pub url: &'a str,
+    pub username: &'a str,
+    pub password: &'a str,
+}
+
+pub fn build_payload(p: &BuildPayload<'_>) -> JsonValue {
+    let registry = p.registry.as_ref().map(|r| {
+        json!({ "url": r.url, "username": r.username, "password": r.password })
+    });
+    json!({
+        "build_id": p.build_id,
+        "deployment_id": p.deployment_id,
+        "service_id": p.service_id,
+        "git_repo": p.git_repo,
+        "git_branch": p.git_branch,
+        "dockerfile_path": p.dockerfile_path,
+        "build_context": p.build_context,
+        "image_tag": p.image_tag,
+        "github_pat": p.github_pat,
+        "registry": registry,
     })
 }

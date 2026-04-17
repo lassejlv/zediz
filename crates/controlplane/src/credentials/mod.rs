@@ -1,6 +1,7 @@
 pub mod routes;
 
 use anyhow::{anyhow, Context, Result};
+use serde_json::Value as JsonValue;
 use sqlx::PgPool;
 
 use crate::crypto::MasterKey;
@@ -25,4 +26,43 @@ pub async fn first_hetzner_token(
         .context("decrypting Hetzner token")?;
     let s = String::from_utf8(pt).map_err(|e| anyhow!("token not utf8: {e}"))?;
     Ok(Some(s))
+}
+
+/// Decrypted view of a stored credential. Caller is expected to use the
+/// plaintext immediately (ship it to an agent in-memory) and drop it.
+pub struct DecryptedCredential {
+    pub kind: String,
+    pub secret: String,
+    pub metadata: JsonValue,
+}
+
+/// Fetch + decrypt a credential by id, scoped to `workspace_id`. Returns None
+/// if the credential is missing, the workspace doesn't own it, or the secret
+/// isn't valid UTF-8 (all of our kinds store text — tokens, passwords, PATs).
+pub async fn fetch_decrypted(
+    pool: &PgPool,
+    master_key: &MasterKey,
+    workspace_id: &str,
+    credential_id: &str,
+) -> Result<Option<DecryptedCredential>> {
+    let row: Option<(String, Vec<u8>, JsonValue)> = sqlx::query_as(
+        "SELECT kind, encrypted, metadata FROM credentials \
+         WHERE id = $1 AND workspace_id = $2",
+    )
+    .bind(credential_id)
+    .bind(workspace_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((kind, ct, metadata)) = row else {
+        return Ok(None);
+    };
+    let pt = master_key
+        .decrypt(&ct)
+        .with_context(|| format!("decrypting credential {credential_id}"))?;
+    let secret = String::from_utf8(pt).map_err(|e| anyhow!("credential not utf8: {e}"))?;
+    Ok(Some(DecryptedCredential {
+        kind,
+        secret,
+        metadata,
+    }))
 }

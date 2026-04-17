@@ -8,9 +8,10 @@ import {
   SheetTrigger,
 } from '@/components/sheet';
 import { Button, ErrorText, Field, Input, Select } from '@/components/ui';
-import { useCreateService } from '@/lib/services';
+import { useCreateService, type CreateServiceInput } from '@/lib/services';
+import { useCredentials } from '@/lib/credentials';
 import { ApiError } from '@/lib/api';
-import type { RestartPolicy } from '@/lib/types';
+import type { CredentialSummary, RestartPolicy } from '@/lib/types';
 
 interface Props {
   workspaceSlug: string;
@@ -18,9 +19,14 @@ interface Props {
   children: ReactNode;
 }
 
+type Source = 'image' | 'git';
+
 export function NewServiceSheet({ workspaceSlug, projectSlug, children }: Props) {
   const create = useCreateService(workspaceSlug, projectSlug);
+  const credentials = useCredentials(workspaceSlug);
   const [open, setOpen] = useState(false);
+
+  const [source, setSource] = useState<Source>('image');
 
   const [slug, setSlug] = useState('');
   const [name, setName] = useState('');
@@ -31,9 +37,20 @@ export function NewServiceSheet({ workspaceSlug, projectSlug, children }: Props)
   const [cpuMillis, setCpuMillis] = useState('');
   const [memoryMb, setMemoryMb] = useState('');
   const [diskMb, setDiskMb] = useState('');
+
+  // Git-only fields
+  const [gitRepo, setGitRepo] = useState('');
+  const [gitBranch, setGitBranch] = useState('main');
+  const [dockerfilePath, setDockerfilePath] = useState('Dockerfile');
+  const [buildContext, setBuildContext] = useState('.');
+  const [registryRepo, setRegistryRepo] = useState('');
+  const [githubCredId, setGithubCredId] = useState('');
+  const [registryCredId, setRegistryCredId] = useState('');
+
   const [error, setError] = useState<string | null>(null);
 
   function reset() {
+    setSource('image');
     setSlug('');
     setName('');
     setImage('');
@@ -43,6 +60,13 @@ export function NewServiceSheet({ workspaceSlug, projectSlug, children }: Props)
     setCpuMillis('');
     setMemoryMb('');
     setDiskMb('');
+    setGitRepo('');
+    setGitBranch('main');
+    setDockerfilePath('Dockerfile');
+    setBuildContext('.');
+    setRegistryRepo('');
+    setGithubCredId('');
+    setRegistryCredId('');
     setError(null);
   }
 
@@ -60,15 +84,33 @@ export function NewServiceSheet({ workspaceSlug, projectSlug, children }: Props)
               disk_mb: parsePositiveInt(diskMb, 1024, 'disk MB'),
             }
           : undefined;
-      await create.mutateAsync({
+
+      const base: CreateServiceInput = {
         slug,
         name,
-        image_ref: image,
+        source,
         restart_policy: restartPolicy,
         ports,
         env_vars,
         resources,
-      });
+      };
+
+      if (source === 'image') {
+        if (!image.trim()) throw new Error('image is required');
+        base.image_ref = image.trim();
+      } else {
+        if (!gitRepo.trim()) throw new Error('git repo URL is required');
+        if (!registryCredId) throw new Error('pick a registry credential');
+        base.git_repo = gitRepo.trim();
+        base.git_branch = gitBranch.trim() || 'main';
+        base.dockerfile_path = dockerfilePath.trim() || 'Dockerfile';
+        base.build_context = buildContext.trim() || '.';
+        if (registryRepo.trim()) base.registry_repo = registryRepo.trim();
+        base.registry_credential_id = registryCredId;
+        if (githubCredId) base.github_credential_id = githubCredId;
+      }
+
+      await create.mutateAsync(base);
       reset();
       setOpen(false);
     } catch (err) {
@@ -77,6 +119,9 @@ export function NewServiceSheet({ workspaceSlug, projectSlug, children }: Props)
       );
     }
   }
+
+  const registryCreds = (credentials.data ?? []).filter((c) => c.kind === 'registry');
+  const githubCreds = (credentials.data ?? []).filter((c) => c.kind === 'github_pat');
 
   return (
     <Sheet
@@ -91,10 +136,12 @@ export function NewServiceSheet({ workspaceSlug, projectSlug, children }: Props)
         <SheetHeader>
           <SheetTitle>New service</SheetTitle>
           <SheetDescription>
-            Run a container from an image. You can edit env and ports after creation.
+            Run a container from a published image, or build one from a Git repo on deploy.
           </SheetDescription>
         </SheetHeader>
         <form onSubmit={onSubmit} className="flex flex-1 flex-col gap-4">
+          <SourceToggle value={source} onChange={setSource} />
+
           <div className="grid grid-cols-2 gap-3">
             <Field label="Slug" htmlFor="svc-slug">
               <Input
@@ -115,15 +162,42 @@ export function NewServiceSheet({ workspaceSlug, projectSlug, children }: Props)
               />
             </Field>
           </div>
-          <Field label="Image" htmlFor="svc-image" hint="e.g. nginx:latest or ghcr.io/org/app:v1">
-            <Input
-              id="svc-image"
-              required
-              placeholder="nginx:latest"
-              value={image}
-              onChange={(e) => setImage(e.target.value)}
+
+          {source === 'image' ? (
+            <Field
+              label="Image"
+              htmlFor="svc-image"
+              hint="e.g. nginx:latest or ghcr.io/org/app:v1"
+            >
+              <Input
+                id="svc-image"
+                required
+                placeholder="nginx:latest"
+                value={image}
+                onChange={(e) => setImage(e.target.value)}
+              />
+            </Field>
+          ) : (
+            <GitFields
+              registryCreds={registryCreds}
+              githubCreds={githubCreds}
+              gitRepo={gitRepo}
+              setGitRepo={setGitRepo}
+              gitBranch={gitBranch}
+              setGitBranch={setGitBranch}
+              dockerfilePath={dockerfilePath}
+              setDockerfilePath={setDockerfilePath}
+              buildContext={buildContext}
+              setBuildContext={setBuildContext}
+              registryRepo={registryRepo}
+              setRegistryRepo={setRegistryRepo}
+              githubCredId={githubCredId}
+              setGithubCredId={setGithubCredId}
+              registryCredId={registryCredId}
+              setRegistryCredId={setRegistryCredId}
             />
-          </Field>
+          )}
+
           <Field
             label="Ports"
             htmlFor="svc-ports"
@@ -202,6 +276,170 @@ export function NewServiceSheet({ workspaceSlug, projectSlug, children }: Props)
         </form>
       </SheetContent>
     </Sheet>
+  );
+}
+
+function SourceToggle({ value, onChange }: { value: Source; onChange: (v: Source) => void }) {
+  return (
+    <div
+      role="tablist"
+      className="inline-flex rounded-md border border-[var(--color-border)] p-0.5 text-xs"
+    >
+      {(['image', 'git'] as const).map((s) => (
+        <button
+          key={s}
+          type="button"
+          role="tab"
+          aria-selected={value === s}
+          onClick={() => onChange(s)}
+          className={[
+            'rounded px-3 py-1 transition-colors',
+            value === s
+              ? 'bg-black/5 text-[var(--color-fg)] dark:bg-white/10'
+              : 'text-[var(--color-muted)] hover:text-[var(--color-fg)]',
+          ].join(' ')}
+        >
+          {s === 'image' ? 'Image' : 'Git repo'}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function GitFields({
+  registryCreds,
+  githubCreds,
+  gitRepo,
+  setGitRepo,
+  gitBranch,
+  setGitBranch,
+  dockerfilePath,
+  setDockerfilePath,
+  buildContext,
+  setBuildContext,
+  registryRepo,
+  setRegistryRepo,
+  githubCredId,
+  setGithubCredId,
+  registryCredId,
+  setRegistryCredId,
+}: {
+  registryCreds: CredentialSummary[];
+  githubCreds: CredentialSummary[];
+  gitRepo: string;
+  setGitRepo: (v: string) => void;
+  gitBranch: string;
+  setGitBranch: (v: string) => void;
+  dockerfilePath: string;
+  setDockerfilePath: (v: string) => void;
+  buildContext: string;
+  setBuildContext: (v: string) => void;
+  registryRepo: string;
+  setRegistryRepo: (v: string) => void;
+  githubCredId: string;
+  setGithubCredId: (v: string) => void;
+  registryCredId: string;
+  setRegistryCredId: (v: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3 rounded-md border border-[var(--color-border)] p-3">
+      <Field
+        label="Repo URL"
+        htmlFor="svc-git-repo"
+        hint="https://github.com/org/repo[.git]"
+      >
+        <Input
+          id="svc-git-repo"
+          required
+          placeholder="https://github.com/org/repo"
+          value={gitRepo}
+          onChange={(e) => setGitRepo(e.target.value)}
+        />
+      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Branch" htmlFor="svc-git-branch">
+          <Input
+            id="svc-git-branch"
+            placeholder="main"
+            value={gitBranch}
+            onChange={(e) => setGitBranch(e.target.value)}
+          />
+        </Field>
+        <Field label="Dockerfile" htmlFor="svc-dockerfile">
+          <Input
+            id="svc-dockerfile"
+            placeholder="Dockerfile"
+            value={dockerfilePath}
+            onChange={(e) => setDockerfilePath(e.target.value)}
+          />
+        </Field>
+      </div>
+      <Field
+        label="Build context"
+        htmlFor="svc-build-context"
+        hint="Dir passed to `docker buildx build`, relative to the repo root."
+      >
+        <Input
+          id="svc-build-context"
+          placeholder="."
+          value={buildContext}
+          onChange={(e) => setBuildContext(e.target.value)}
+        />
+      </Field>
+      <Field
+        label="Registry credential"
+        htmlFor="svc-registry-cred"
+        hint={
+          registryCreds.length === 0
+            ? 'Add a credential (kind: registry) with the registry URL in metadata first.'
+            : undefined
+        }
+      >
+        <Select
+          id="svc-registry-cred"
+          required
+          value={registryCredId}
+          onChange={(e) => setRegistryCredId(e.target.value)}
+        >
+          <option value="">— select —</option>
+          {registryCreds.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field
+        label="GitHub PAT (for private repos)"
+        htmlFor="svc-github-cred"
+        hint="Leave blank for public repos."
+      >
+        <Select
+          id="svc-github-cred"
+          value={githubCredId}
+          onChange={(e) => setGithubCredId(e.target.value)}
+        >
+          <option value="">— none —</option>
+          {githubCreds.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field
+        label="Registry repo override (optional)"
+        htmlFor="svc-registry-repo"
+        hint="Defaults to <credential-url>/<workspace>/<service>."
+      >
+        <Input
+          id="svc-registry-repo"
+          placeholder="registry.zediz.dev/team/api"
+          value={registryRepo}
+          onChange={(e) => setRegistryRepo(e.target.value)}
+        />
+      </Field>
+    </div>
   );
 }
 

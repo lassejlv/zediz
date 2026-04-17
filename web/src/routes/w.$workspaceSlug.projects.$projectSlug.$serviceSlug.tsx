@@ -29,7 +29,8 @@ import {
   type SemanticStatus,
 } from '@/components/ui';
 import { DomainsSection } from '@/components/domains-section';
-import type { DeploymentSummary, ServiceSummary } from '@/lib/types';
+import { buildsQuery, buildTone } from '@/lib/builds';
+import type { BuildSummary, DeploymentSummary, ServiceSummary } from '@/lib/types';
 
 export const Route = createFileRoute(
   '/w/$workspaceSlug/projects/$projectSlug/$serviceSlug',
@@ -37,7 +38,7 @@ export const Route = createFileRoute(
   component: ServicePage,
 });
 
-type Tab = 'overview' | 'deployments' | 'domains' | 'logs' | 'settings';
+type Tab = 'overview' | 'deployments' | 'builds' | 'domains' | 'logs' | 'settings';
 
 function ServicePage() {
   const { workspaceSlug, projectSlug, serviceSlug } = Route.useParams();
@@ -104,9 +105,7 @@ function ServicePage() {
           { label: serviceSlug },
         ]}
         title={svc?.name ?? serviceSlug}
-        subtitle={
-          svc?.image_ref ? <span className="font-mono text-xs">{svc.image_ref}</span> : '—'
-        }
+        subtitle={<ServiceSubtitle service={svc} />}
         status={
           <StatusPill
             status={serviceStatus.tone}
@@ -192,6 +191,18 @@ function ServicePage() {
         />
       ) : null}
 
+      {tab === 'builds' ? (
+        <BuildsTab
+          workspaceSlug={workspaceSlug}
+          projectSlug={projectSlug}
+          serviceSlug={serviceSlug}
+          onViewLogs={(deploymentId) => {
+            setActiveDeploymentId(deploymentId);
+            setTab('logs');
+          }}
+        />
+      ) : null}
+
       {tab === 'logs' ? (
         <LogsTab
           deployments={deployments.data ?? []}
@@ -217,19 +228,42 @@ function computeServiceStatus(d: DeploymentSummary | undefined): ServiceStatus {
   const { tone, pulse } = deploymentTone(d?.status);
   const label = !d
     ? 'never deployed'
-    : d.status === 'pulling'
-      ? 'pulling image'
-      : d.status === 'pending' || d.status === 'placing'
-        ? 'pending'
-        : d.status;
+    : d.status === 'building'
+      ? 'building'
+      : d.status === 'pulling'
+        ? 'pulling image'
+        : d.status === 'pending' || d.status === 'placing'
+          ? 'pending'
+          : d.status;
   return { tone, label, pulse };
 }
 
 function computeDeployLabel(latest: DeploymentSummary | undefined): string {
   if (!latest) return 'Deploy';
-  if (['pending', 'placing', 'pulling', 'starting'].includes(latest.status)) return 'Deploying…';
+  if (['pending', 'building', 'placing', 'pulling', 'starting'].includes(latest.status))
+    return 'Deploying…';
   if (latest.status === 'running') return 'Redeploy';
   return 'Deploy';
+}
+
+function ServiceSubtitle({ service }: { service: ServiceSummary | undefined }) {
+  if (!service) return <>—</>;
+  if (service.source === 'git' && service.git_repo) {
+    return (
+      <span className="font-mono text-xs">
+        {service.git_repo}
+        {service.git_branch ? <>@{service.git_branch}</> : null}
+        {service.git_commit ? (
+          <span className="text-[var(--color-muted)]"> · {service.git_commit.slice(0, 7)}</span>
+        ) : null}
+      </span>
+    );
+  }
+  return service.image_ref ? (
+    <span className="font-mono text-xs">{service.image_ref}</span>
+  ) : (
+    <>—</>
+  );
 }
 
 /* ---------- summary strip ---------- */
@@ -281,6 +315,7 @@ function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
   const tabs: { id: Tab; label: string }[] = [
     { id: 'overview', label: 'Overview' },
     { id: 'deployments', label: 'Deployments' },
+    { id: 'builds', label: 'Builds' },
     { id: 'domains', label: 'Domains' },
     { id: 'logs', label: 'Logs' },
     { id: 'settings', label: 'Settings' },
@@ -712,6 +747,119 @@ function LogViewer({ deploymentId }: { deploymentId: string }) {
       </div>
     </Card>
   );
+}
+
+/* ---------- builds tab ---------- */
+
+function BuildsTab({
+  workspaceSlug,
+  projectSlug,
+  serviceSlug,
+  onViewLogs,
+}: {
+  workspaceSlug: string;
+  projectSlug: string;
+  serviceSlug: string;
+  onViewLogs: (deploymentId: string) => void;
+}) {
+  const builds = useQuery({
+    ...buildsQuery(workspaceSlug, projectSlug, serviceSlug),
+    refetchInterval: 3000,
+  });
+
+  if (!builds.data || builds.data.length === 0) {
+    return (
+      <Card className="px-6 py-10 text-center text-sm text-[var(--color-muted)]">
+        No builds yet. Set the service source to Git and hit Deploy to kick one off.
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="overflow-hidden">
+      <table className="w-full text-sm">
+        <thead className="text-left text-[10px] uppercase tracking-wider text-[var(--color-muted)]">
+          <tr>
+            <th className="px-4 py-2.5 font-medium">Status</th>
+            <th className="px-4 py-2.5 font-medium">Commit</th>
+            <th className="px-4 py-2.5 font-medium">Image</th>
+            <th className="px-4 py-2.5 font-medium">Started</th>
+            <th className="px-4 py-2.5 font-medium">Duration</th>
+            <th className="px-4 py-2.5 font-medium">Reason</th>
+            <th className="px-4 py-2.5" />
+          </tr>
+        </thead>
+        <tbody>
+          {builds.data.map((b) => (
+            <BuildRow key={b.id} b={b} onViewLogs={onViewLogs} />
+          ))}
+        </tbody>
+      </table>
+    </Card>
+  );
+}
+
+function BuildRow({
+  b,
+  onViewLogs,
+}: {
+  b: BuildSummary;
+  onViewLogs: (deploymentId: string) => void;
+}) {
+  const tone = buildTone(b.status);
+  return (
+    <tr className="border-t border-[var(--color-border)]">
+      <td className="px-4 py-2">
+        <StatusPill status={tone.tone} label={b.status} pulse={tone.pulse} />
+      </td>
+      <td className="px-4 py-2 font-mono text-xs">
+        {b.git_commit ? b.git_commit.slice(0, 7) : '—'}
+      </td>
+      <td className="px-4 py-2">
+        {b.image_digest ? (
+          <CopyableId value={b.image_digest} display={shortDigest(b.image_digest)} />
+        ) : b.image_tag ? (
+          <span className="font-mono text-xs text-[var(--color-muted)]">
+            {truncateImage(b.image_tag)}
+          </span>
+        ) : (
+          <span className="text-xs text-[var(--color-muted)]">—</span>
+        )}
+      </td>
+      <td className="px-4 py-2 text-xs text-[var(--color-muted)]">
+        <RelativeTime date={b.created_at} />
+      </td>
+      <td className="px-4 py-2 font-mono text-xs text-[var(--color-muted)]">
+        {formatBuildDuration(b)}
+      </td>
+      <td className="px-4 py-2 text-xs text-[var(--color-muted)]">
+        {b.reason ? <span title={b.reason}>{truncate(b.reason, 40)}</span> : '—'}
+      </td>
+      <td className="px-4 py-2 text-right">
+        {b.deployment_id ? (
+          <Button variant="secondary" onClick={() => onViewLogs(b.deployment_id!)}>
+            View logs
+          </Button>
+        ) : null}
+      </td>
+    </tr>
+  );
+}
+
+function formatBuildDuration(b: BuildSummary): string {
+  const start = b.started_at ? new Date(b.started_at).getTime() : null;
+  if (!start) return '—';
+  const end = b.finished_at ? new Date(b.finished_at).getTime() : Date.now();
+  const secs = Math.round((end - start) / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins}m${secs % 60}s`;
+  return `${Math.round(mins / 60)}h`;
+}
+
+function shortDigest(digest: string): string {
+  const at = digest.indexOf(':');
+  return at === -1 ? digest.slice(0, 12) : digest.slice(at + 1, at + 13);
 }
 
 /* ---------- settings tab ---------- */
