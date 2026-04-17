@@ -223,9 +223,35 @@ async fn dispatch_build(state: &AppState, b: QueuedBuild) -> Result<()> {
     };
 
     // Pick a builder node; any ready node works if no explicit builder pool.
-    let node = pick_builder_node(state.pool(), &b.workspace_id)
-        .await?
-        .ok_or_else(|| anyhow!("no ready node available to build on — provision one first"))?;
+    // If nothing's ready, trigger autoscale (same mechanism runtime deployments
+    // use) and leave the build queued so the next tick picks it up once the
+    // node registers. Builds are NOT marked failed on "no node" — that's a
+    // transient condition, not a hard error.
+    let node = match pick_builder_node(state.pool(), &b.workspace_id).await? {
+        Some(n) => n,
+        None => {
+            let build_resources = Resources {
+                cpu_millis: BUILD_CPU_MILLIS,
+                memory_mb: BUILD_MEMORY_MB,
+                disk_mb: BUILD_DISK_MB,
+            };
+            let reason = match try_provision_for(state, &b.workspace_id, &build_resources).await? {
+                ProvisionOutcome::Provisioning => {
+                    "waiting for provisioned node to register".to_string()
+                }
+                ProvisionOutcome::Skipped(msg) => msg,
+            };
+            sqlx::query(
+                "UPDATE builds SET reason = $1, updated_at = now() \
+                 WHERE id = $2 AND status = 'queued'",
+            )
+            .bind(&reason)
+            .bind(&b.build_id)
+            .execute(state.pool())
+            .await?;
+            return Ok(());
+        }
+    };
 
     // Reserve + claim the build.
     let mut tx = state.pool().begin().await?;

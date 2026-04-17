@@ -29,7 +29,15 @@ use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     // `any` matches all HTTP methods — docker pushes use GET/HEAD/PUT/PATCH/POST/DELETE.
-    Router::new().route("/v2", any(handle)).route("/v2/*path", any(handle))
+    // Docker clients hit the discovery endpoint as `/v2/` (with trailing
+    // slash); axum's `/v2/*path` wildcard requires at least one character
+    // after the slash, so the bare `/v2/` needs its own route or else it
+    // falls through to 404 and `docker login` dies with "login attempt to
+    // https://.../v2/ failed with status: 404 Not Found".
+    Router::new()
+        .route("/v2", any(handle))
+        .route("/v2/", any(handle))
+        .route("/v2/*path", any(handle))
 }
 
 static HOP_BY_HOP: LazyLock<[HeaderName; 7]> = LazyLock::new(|| {
