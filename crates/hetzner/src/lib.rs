@@ -162,6 +162,61 @@ impl HetznerClient {
         Ok(parsed.action)
     }
 
+    pub async fn create_volume(
+        &self,
+        req: &CreateVolumeRequest<'_>,
+    ) -> Result<CreateVolumeResponse, HetznerError> {
+        self.post_json("/volumes", req).await
+    }
+
+    pub async fn get_volume(&self, id: i64) -> Result<Volume, HetznerError> {
+        let res: VolumeResponse = self.get_json(&format!("/volumes/{id}")).await?;
+        Ok(res.volume)
+    }
+
+    /// Idempotent: treats 404 as success so callers can retry safely.
+    pub async fn delete_volume(&self, id: i64) -> Result<(), HetznerError> {
+        let res = self
+            .http
+            .delete(format!("{API_BASE}/volumes/{id}"))
+            .bearer_auth(&self.token)
+            .send()
+            .await?;
+        let status = res.status();
+        if status == StatusCode::NOT_FOUND || status.is_success() {
+            return Ok(());
+        }
+        let text = res.text().await.unwrap_or_default();
+        Err(HetznerError::Api {
+            status: status.as_u16(),
+            message: text,
+        })
+    }
+
+    pub async fn attach_volume(
+        &self,
+        volume_id: i64,
+        server_id: i64,
+        automount: bool,
+    ) -> Result<Action, HetznerError> {
+        let body = serde_json::json!({
+            "server": server_id,
+            "automount": automount,
+        });
+        let res: ActionResponse = self
+            .post_json(&format!("/volumes/{volume_id}/actions/attach"), &body)
+            .await?;
+        Ok(res.action)
+    }
+
+    pub async fn detach_volume(&self, volume_id: i64) -> Result<Action, HetznerError> {
+        let body = serde_json::json!({});
+        let res: ActionResponse = self
+            .post_json(&format!("/volumes/{volume_id}/actions/detach"), &body)
+            .await?;
+        Ok(res.action)
+    }
+
     pub async fn get_action(&self, id: i64) -> Result<Action, HetznerError> {
         let res: ActionResponse = self.get_json(&format!("/actions/{id}")).await?;
         Ok(res.action)
@@ -328,6 +383,43 @@ pub struct Action {
     pub id: i64,
     pub status: String,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateVolumeRequest<'a> {
+    pub name: &'a str,
+    pub size: u32,
+    pub location: &'a str,
+    pub automount: bool,
+    /// Tell Hetzner to run mkfs at volume creation so the agent just
+    /// has to mount the block device at runtime. "ext4" or "xfs".
+    pub format: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateVolumeResponse {
+    pub volume: Volume,
+    pub action: Action,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Volume {
+    pub id: i64,
+    pub name: String,
+    pub size: u32,
+    pub status: String,
+    /// Populated once attached.
+    #[serde(default)]
+    pub server: Option<i64>,
+    /// `/dev/disk/by-id/scsi-0HC_Volume_<id>` — only set while attached.
+    #[serde(default)]
+    pub linux_device: Option<String>,
+    pub location: Location,
+}
+
+#[derive(Deserialize)]
+struct VolumeResponse {
+    volume: Volume,
 }
 
 #[derive(Deserialize)]

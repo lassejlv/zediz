@@ -26,6 +26,7 @@ mod scheduler;
 mod services;
 mod ssh_keys;
 mod state;
+mod volumes;
 mod workspaces;
 
 use axum::extract::State;
@@ -105,6 +106,7 @@ fn router(state: AppState) -> Router {
         .merge(nodes::routes::router())
         .merge(deployments::routes::router())
         .merge(domains::routes::router())
+        .merge(volumes::routes::router())
         .merge(agent::routes::router());
 
     // The registry proxy is mounted at the root (not under /api/v1) because
