@@ -100,7 +100,7 @@ function NoWorkspaces() {
       <p className="text-sm text-[var(--color-muted)]">
         Create your first workspace to deploy services, invite teammates, and manage nodes.
       </p>
-      <Link to="/workspaces/new">
+      <Link to="/w/new">
         <Button>Create workspace</Button>
       </Link>
     </section>

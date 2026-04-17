@@ -5,7 +5,7 @@ import { useCreateWorkspace } from '@/lib/workspaces';
 import { ApiError } from '@/lib/api';
 import { Button, Card, ErrorText, Field, Input } from '@/components/ui';
 
-export const Route = createFileRoute('/workspaces/new')({
+export const Route = createFileRoute('/w/new')({
   beforeLoad: async ({ context }) => {
     const me = await context.queryClient.ensureQueryData(meQuery);
     if (!me) throw redirect({ to: '/login' });

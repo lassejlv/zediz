@@ -54,6 +54,14 @@ async fn create(
 ) -> ApiResult<Json<WorkspaceSummary>> {
     let slug = req.slug.trim().to_lowercase();
     validate_slug(&slug)?;
+    // Reserved workspace slugs that would collide with literal app routes
+    // under /w/. Keep this list tight — only add entries that actually
+    // conflict with something in web/src/routes.
+    if matches!(slug.as_str(), "new") {
+        return Err(ApiError::Validation(
+            "slug 'new' is reserved — try another".into(),
+        ));
+    }
     let name = req.name.trim().to_string();
     if name.is_empty() {
         return Err(ApiError::Validation("name is required".into()));
