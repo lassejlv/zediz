@@ -183,6 +183,36 @@ impl DockerExec {
         Ok(created.id)
     }
 
+    /// Inspect the zediz-managed container for a deployment. Returns
+    /// `Some(container_id)` only if the container exists *and* is running.
+    /// Missing, exited, or paused containers — and 404s from the daemon —
+    /// all map to `Ok(None)` so callers can treat this as a predicate.
+    pub async fn running_container_id(&self, deployment_id: &str) -> Result<Option<String>> {
+        let name = Self::container_name(deployment_id);
+        let res = self
+            .docker
+            .inspect_container(&name, None::<bollard::container::InspectContainerOptions>)
+            .await;
+        match res {
+            Ok(inspect) => {
+                let running = inspect
+                    .state
+                    .as_ref()
+                    .and_then(|s| s.running)
+                    .unwrap_or(false);
+                if running {
+                    Ok(inspect.id)
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     pub async fn stop_by_deployment(&self, deployment_id: &str) -> Result<()> {
         let name = Self::container_name(deployment_id);
         let res = self

@@ -50,6 +50,11 @@ impl Executor {
             acks.push(ack);
         }
 
+        // Reconcile tracked deployments against Docker so a missed status
+        // POST (network blip, CP restart) doesn't leave a live container
+        // stuck in `pulling` on the CP forever.
+        self.reconcile_tracked().await;
+
         // Ship log chunks for tracked deployments.
         let tracked_ids: Vec<String> = self.tracked.iter().cloned().collect();
         for deployment_id in tracked_ids {
@@ -66,6 +71,69 @@ impl Executor {
             let _ = self.client.heartbeat(&self.node_token, &body).await;
         }
         Ok(())
+    }
+
+    /// For each deployment we think is live, check Docker's actual state
+    /// and tell the control plane. Running containers get a fresh
+    /// `running` report; exited or missing ones get `stopped` and are
+    /// dropped from tracked so we stop scraping their logs.
+    async fn reconcile_tracked(&mut self) {
+        let snapshot: Vec<String> = self.tracked.iter().cloned().collect();
+        for deployment_id in snapshot {
+            match self.docker.running_container_id(&deployment_id).await {
+                Ok(Some(container_id)) => {
+                    if let Err(e) = self
+                        .client
+                        .report_status(
+                            &self.node_token,
+                            &deployment_id,
+                            &StatusBody {
+                                status: "running".into(),
+                                container_id: Some(container_id),
+                                reason: None,
+                            },
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            deployment = %deployment_id,
+                            error = ?e,
+                            "reconcile report_status running",
+                        );
+                    }
+                }
+                Ok(None) => {
+                    if let Err(e) = self
+                        .client
+                        .report_status(
+                            &self.node_token,
+                            &deployment_id,
+                            &StatusBody {
+                                status: "stopped".into(),
+                                container_id: None,
+                                reason: None,
+                            },
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            deployment = %deployment_id,
+                            error = ?e,
+                            "reconcile report_status stopped",
+                        );
+                    }
+                    self.tracked.remove(&deployment_id);
+                    self.log_cursors.remove(&deployment_id);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        deployment = %deployment_id,
+                        error = ?e,
+                        "reconcile docker inspect",
+                    );
+                }
+            }
+        }
     }
 
     async fn execute(&mut self, cmd: crate::client::Command) -> CommandAck {
