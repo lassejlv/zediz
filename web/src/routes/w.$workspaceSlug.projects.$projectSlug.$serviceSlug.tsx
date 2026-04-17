@@ -29,6 +29,7 @@ import {
   type SemanticStatus,
 } from '@/components/ui';
 import { DomainsSection } from '@/components/domains-section';
+import { ServiceMetricsTab } from '@/components/service-metrics';
 import { ServiceSettingsTab } from '@/components/service-settings';
 import { buildsQuery, buildTone } from '@/lib/builds';
 import type { BuildSummary, DeploymentSummary, ServiceSummary } from '@/lib/types';
@@ -39,7 +40,14 @@ export const Route = createFileRoute(
   component: ServicePage,
 });
 
-type Tab = 'overview' | 'deployments' | 'builds' | 'domains' | 'logs' | 'settings';
+type Tab =
+  | 'overview'
+  | 'metrics'
+  | 'deployments'
+  | 'builds'
+  | 'domains'
+  | 'logs'
+  | 'settings';
 
 function ServicePage() {
   const { workspaceSlug, projectSlug, serviceSlug } = Route.useParams();
@@ -165,6 +173,15 @@ function ServicePage() {
           onStop={(id) => stop.mutate(id)}
           activeId={activeDeploymentId}
           onSelect={(id) => setActiveDeploymentId(id)}
+        />
+      ) : null}
+
+      {tab === 'metrics' && svc ? (
+        <ServiceMetricsTab
+          service={svc}
+          workspaceSlug={workspaceSlug}
+          projectSlug={projectSlug}
+          serviceSlug={serviceSlug}
         />
       ) : null}
 
@@ -322,6 +339,7 @@ function SummaryStrip({
 function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
   const tabs: { id: Tab; label: string }[] = [
     { id: 'overview', label: 'Overview' },
+    { id: 'metrics', label: 'Metrics' },
     { id: 'deployments', label: 'Deployments' },
     { id: 'builds', label: 'Builds' },
     { id: 'domains', label: 'Domains' },
