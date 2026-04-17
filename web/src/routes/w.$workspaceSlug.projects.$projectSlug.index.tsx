@@ -1,8 +1,7 @@
-import { createFileRoute } from '@tanstack/react-router';
+import { createFileRoute, Link } from '@tanstack/react-router';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { Plus } from 'lucide-react';
-import { NewServiceSheet } from '@/components/new-service-sheet';
 import { Button, EmptyState } from '@/components/ui';
 import { projectQuery } from '@/lib/projects';
 import { servicesQuery, serviceDeploymentsQuery } from '@/lib/services';
@@ -79,11 +78,14 @@ function ProjectBoard() {
           canCreate={canCreate}
           createTrigger={
             canCreate ? (
-              <NewServiceSheet workspaceSlug={workspaceSlug} projectSlug={projectSlug}>
+              <Link
+                to="/w/$workspaceSlug/projects/$projectSlug/new"
+                params={{ workspaceSlug, projectSlug }}
+              >
                 <Button>
                   <Plus className="mr-1 h-3.5 w-3.5" /> Add service
                 </Button>
-              </NewServiceSheet>
+              </Link>
             ) : null
           }
         />
@@ -95,11 +97,14 @@ function ProjectBoard() {
           body="A service runs a container in this project. Add one to deploy."
           cta={
             canCreate ? (
-              <NewServiceSheet workspaceSlug={workspaceSlug} projectSlug={projectSlug}>
+              <Link
+                to="/w/$workspaceSlug/projects/$projectSlug/new"
+                params={{ workspaceSlug, projectSlug }}
+              >
                 <Button>
                   <Plus className="mr-1 h-3.5 w-3.5" /> Add service
                 </Button>
-              </NewServiceSheet>
+              </Link>
             ) : null
           }
         />

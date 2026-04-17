@@ -231,6 +231,14 @@ async fn create(
 
     let service_slug = req.slug.trim().to_lowercase();
     validate_slug(&service_slug)?;
+    // Reserved because the frontend route `/w/<ws>/projects/<p>/new`
+    // is the literal "create service" page — a service slugged `new`
+    // would shadow it.
+    if service_slug == "new" {
+        return Err(ApiError::Validation(
+            "slug 'new' is reserved — try another".into(),
+        ));
+    }
     let name = req.name.trim().to_string();
     if name.is_empty() {
         return Err(ApiError::Validation("name is required".into()));

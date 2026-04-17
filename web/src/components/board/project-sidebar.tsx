@@ -1,7 +1,6 @@
 import { Link } from '@tanstack/react-router';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { ArrowLeft, Plus } from 'lucide-react';
-import { NewServiceSheet } from '@/components/new-service-sheet';
 import { StatusDot } from '@/components/ui';
 import { projectQuery } from '@/lib/projects';
 import { servicesQuery, serviceDeploymentsQuery } from '@/lib/services';
@@ -61,15 +60,14 @@ export function ProjectSidebar({ workspaceSlug, projectSlug }: Props) {
             Services
           </span>
           {canCreate ? (
-            <NewServiceSheet workspaceSlug={workspaceSlug} projectSlug={projectSlug}>
-              <button
-                type="button"
-                className="inline-flex h-5 w-5 items-center justify-center rounded text-[var(--color-muted)] hover:bg-black/5 hover:text-[var(--color-fg)] dark:hover:bg-white/5"
-                aria-label="Add service"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-            </NewServiceSheet>
+            <Link
+              to="/w/$workspaceSlug/projects/$projectSlug/new"
+              params={{ workspaceSlug, projectSlug }}
+              className="inline-flex h-5 w-5 items-center justify-center rounded text-[var(--color-muted)] hover:bg-black/5 hover:text-[var(--color-fg)] dark:hover:bg-white/5"
+              aria-label="Add service"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </Link>
           ) : null}
         </div>
 
