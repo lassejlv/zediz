@@ -1,7 +1,7 @@
-import { createFileRoute, Link } from '@tanstack/react-router';
+import { createFileRoute } from '@tanstack/react-router';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
-import { Plus, ArrowLeft } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import { NewServiceSheet } from '@/components/new-service-sheet';
 import { Button, EmptyState } from '@/components/ui';
 import { projectQuery } from '@/lib/projects';
@@ -72,15 +72,6 @@ function ProjectBoard() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <div className="mb-3 flex items-center gap-1 text-xs text-[var(--color-muted)]">
-          <Link
-            to="/w/$workspaceSlug/projects"
-            params={{ workspaceSlug }}
-            className="inline-flex items-center gap-1 hover:text-[var(--color-fg)]"
-          >
-            <ArrowLeft className="h-3 w-3" /> All projects
-          </Link>
-        </div>
         <BoardToolbar
           projectName={project.data?.name ?? projectSlug}
           projectSlug={projectSlug}

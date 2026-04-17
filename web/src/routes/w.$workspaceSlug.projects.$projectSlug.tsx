@@ -1,7 +1,7 @@
 import { createFileRoute, Outlet } from '@tanstack/react-router';
-import { useQuery } from '@tanstack/react-query';
 import { projectQuery } from '@/lib/projects';
 import { workspaceQuery } from '@/lib/workspaces';
+import { ProjectSidebar } from '@/components/board/project-sidebar';
 
 export const Route = createFileRoute('/w/$workspaceSlug/projects/$projectSlug')({
   component: ProjectLayout,
@@ -16,9 +16,13 @@ export const Route = createFileRoute('/w/$workspaceSlug/projects/$projectSlug')(
 
 function ProjectLayout() {
   const { workspaceSlug, projectSlug } = Route.useParams();
-  // Prime queries so child routes see data immediately.
-  useQuery(projectQuery(workspaceSlug, projectSlug));
-  useQuery(workspaceQuery(workspaceSlug));
 
-  return <Outlet />;
+  return (
+    <div className="grid grid-cols-[220px_1fr] gap-8">
+      <ProjectSidebar workspaceSlug={workspaceSlug} projectSlug={projectSlug} />
+      <div className="min-w-0">
+        <Outlet />
+      </div>
+    </div>
+  );
 }
