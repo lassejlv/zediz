@@ -28,6 +28,9 @@ export function NewServiceSheet({ workspaceSlug, projectSlug, children }: Props)
   const [restartPolicy, setRestartPolicy] = useState<RestartPolicy>('on-failure');
   const [portsRaw, setPortsRaw] = useState('');
   const [envRaw, setEnvRaw] = useState('');
+  const [cpuMillis, setCpuMillis] = useState('');
+  const [memoryMb, setMemoryMb] = useState('');
+  const [diskMb, setDiskMb] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   function reset() {
@@ -37,6 +40,9 @@ export function NewServiceSheet({ workspaceSlug, projectSlug, children }: Props)
     setRestartPolicy('on-failure');
     setPortsRaw('');
     setEnvRaw('');
+    setCpuMillis('');
+    setMemoryMb('');
+    setDiskMb('');
     setError(null);
   }
 
@@ -46,6 +52,14 @@ export function NewServiceSheet({ workspaceSlug, projectSlug, children }: Props)
     try {
       const ports = parsePorts(portsRaw);
       const env_vars = parseEnv(envRaw);
+      const resources =
+        cpuMillis || memoryMb || diskMb
+          ? {
+              cpu_millis: parsePositiveInt(cpuMillis, 500, 'CPU millis'),
+              memory_mb: parsePositiveInt(memoryMb, 256, 'memory MB'),
+              disk_mb: parsePositiveInt(diskMb, 1024, 'disk MB'),
+            }
+          : undefined;
       await create.mutateAsync({
         slug,
         name,
@@ -53,6 +67,7 @@ export function NewServiceSheet({ workspaceSlug, projectSlug, children }: Props)
         restart_policy: restartPolicy,
         ports,
         env_vars,
+        resources,
       });
       reset();
       setOpen(false);
@@ -142,6 +157,39 @@ export function NewServiceSheet({ workspaceSlug, projectSlug, children }: Props)
               <option value="always">always</option>
             </Select>
           </Field>
+
+          <div className="grid grid-cols-3 gap-3">
+            <Field label="CPU (millis)" htmlFor="svc-cpu" hint="Default 500 (½ core)">
+              <Input
+                id="svc-cpu"
+                type="number"
+                min={1}
+                placeholder="500"
+                value={cpuMillis}
+                onChange={(e) => setCpuMillis(e.target.value)}
+              />
+            </Field>
+            <Field label="Memory (MB)" htmlFor="svc-mem" hint="Default 256">
+              <Input
+                id="svc-mem"
+                type="number"
+                min={1}
+                placeholder="256"
+                value={memoryMb}
+                onChange={(e) => setMemoryMb(e.target.value)}
+              />
+            </Field>
+            <Field label="Disk (MB)" htmlFor="svc-disk" hint="Default 1024">
+              <Input
+                id="svc-disk"
+                type="number"
+                min={1}
+                placeholder="1024"
+                value={diskMb}
+                onChange={(e) => setDiskMb(e.target.value)}
+              />
+            </Field>
+          </div>
           {error ? <ErrorText>{error}</ErrorText> : null}
           <div className="mt-auto flex justify-end gap-2 pt-4">
             <Button type="button" variant="secondary" onClick={() => setOpen(false)}>
@@ -155,6 +203,15 @@ export function NewServiceSheet({ workspaceSlug, projectSlug, children }: Props)
       </SheetContent>
     </Sheet>
   );
+}
+
+function parsePositiveInt(raw: string, fallback: number, label: string): number {
+  if (!raw.trim()) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1) {
+    throw new Error(`${label} must be a positive integer`);
+  }
+  return n;
 }
 
 function parsePorts(raw: string) {

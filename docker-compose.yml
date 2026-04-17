@@ -20,10 +20,11 @@ services:
       - zediz
 
   web:
+    image: ${ZEDIZ_WEB_IMAGE:-ghcr.io/lassejlv/zediz-web:latest}
     build:
       context: .
       dockerfile: Dockerfile.web
-    image: zediz-web:latest
+    pull_policy: always
     restart: unless-stopped
     depends_on:
       - controlplane
