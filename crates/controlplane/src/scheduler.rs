@@ -347,7 +347,7 @@ async fn try_provision_for(
             }
         };
 
-    let ssh_key_ids = ensure_workspace_ssh_keys(state.pool(), workspace_id, &token).await?;
+    let ssh_key_ids = ssh_keys::ensure_on_hetzner(state.pool(), workspace_id, &token).await?;
 
     let result = hetzner_provisioner::provision(
         state.pool(),
@@ -367,29 +367,6 @@ async fn try_provision_for(
         "provisioned hetzner node"
     );
     Ok(ProvisionOutcome::Provisioning)
-}
-
-async fn ensure_workspace_ssh_keys(
-    pool: &PgPool,
-    workspace_id: &str,
-    hetzner_token: &str,
-) -> Result<Vec<i64>> {
-    let keys = ssh_keys::list_for_sync(pool, workspace_id).await?;
-    if keys.is_empty() {
-        return Ok(vec![]);
-    }
-    let client = zediz_hetzner::HetznerClient::new(hetzner_token);
-    let mut out = Vec::with_capacity(keys.len());
-    for k in keys {
-        match client
-            .ensure_ssh_key(&k.name, &k.public_key, &k.fingerprint)
-            .await
-        {
-            Ok(id) => out.push(id),
-            Err(e) => tracing::warn!(error = ?e, ssh_key = %k.id, "ensure ssh key on hetzner"),
-        }
-    }
-    Ok(out)
 }
 
 /// Update `idle_since_at` on nodes: stamp when allocations first drop to zero; clear when non-zero.

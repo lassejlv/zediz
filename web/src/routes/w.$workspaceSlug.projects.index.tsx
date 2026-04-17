@@ -7,7 +7,7 @@ import {
   useCreateProject,
   useDeleteProject,
 } from '@/lib/projects';
-import { workspaceQuery } from '@/lib/workspaces';
+import { canAdmin, canWrite, workspaceQuery } from '@/lib/workspaces';
 import { ApiError } from '@/lib/api';
 import {
   Button,
@@ -41,10 +41,8 @@ function ProjectsPage() {
   const projects = useQuery(projectsQuery(workspaceSlug));
   const del = useDeleteProject(workspaceSlug);
 
-  const canCreate = workspace.data ? workspace.data.role !== 'viewer' : false;
-  const canDelete = workspace.data
-    ? workspace.data.role === 'owner' || workspace.data.role === 'admin'
-    : false;
+  const canCreate = canWrite(workspace.data);
+  const canDelete = canAdmin(workspace.data);
 
   const [sheetOpen, setSheetOpen] = useState(false);
 

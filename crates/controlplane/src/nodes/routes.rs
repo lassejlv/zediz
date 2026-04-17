@@ -298,7 +298,10 @@ async fn provision(
     .map_err(ApiError::Internal)?
     .ok_or_else(|| ApiError::Validation("no Hetzner API token in this workspace".into()))?;
 
-    let ssh_key_ids = ensure_ssh_keys(state.pool(), &ctx.workspace_id.to_string(), &token).await?;
+    let ssh_key_ids =
+        crate::ssh_keys::ensure_on_hetzner(state.pool(), &ctx.workspace_id.to_string(), &token)
+            .await
+            .map_err(ApiError::Internal)?;
 
     let result = hetzner_provisioner::provision(
         state.pool(),
@@ -321,27 +324,3 @@ async fn provision(
     }))
 }
 
-async fn ensure_ssh_keys(
-    pool: &sqlx::PgPool,
-    workspace_id: &str,
-    hetzner_token: &str,
-) -> ApiResult<Vec<i64>> {
-    let keys = crate::ssh_keys::list_for_sync(pool, workspace_id)
-        .await
-        .map_err(ApiError::Internal)?;
-    if keys.is_empty() {
-        return Ok(vec![]);
-    }
-    let client = zediz_hetzner::HetznerClient::new(hetzner_token);
-    let mut out = Vec::with_capacity(keys.len());
-    for k in keys {
-        match client
-            .ensure_ssh_key(&k.name, &k.public_key, &k.fingerprint)
-            .await
-        {
-            Ok(id) => out.push(id),
-            Err(e) => tracing::warn!(error = ?e, ssh_key = %k.id, "ensure ssh key on hetzner"),
-        }
-    }
-    Ok(out)
-}

@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router';
 import type { ServiceSummary, DeploymentSummary } from '@/lib/types';
-import { RelativeTime, StatusPill, type SemanticStatus } from '@/components/ui';
+import { RelativeTime, StatusPill } from '@/components/ui';
+import { deploymentTone } from '@/lib/deployments';
 
 export interface ServiceNodeState {
   service: ServiceSummary;
@@ -8,56 +9,30 @@ export interface ServiceNodeState {
   primaryDomain?: string | null;
 }
 
+const BORDER_BY_TONE: Record<string, string> = {
+  ok: 'border-l-emerald-500/70',
+  info: 'border-l-indigo-500',
+  warn: 'border-l-amber-500',
+  error: 'border-l-red-500',
+  muted: '',
+  accent: 'border-l-emerald-500/70',
+};
+
 function deploymentStatus(d: DeploymentSummary | undefined): {
-  tone: SemanticStatus;
+  tone: ReturnType<typeof deploymentTone>['tone'];
   label: string;
   pulse: boolean;
   borderClass: string;
 } {
-  if (!d)
-    return { tone: 'muted', label: 'never deployed', pulse: false, borderClass: '' };
-  switch (d.status) {
-    case 'running':
-      return {
-        tone: 'ok',
-        label: 'running',
-        pulse: false,
-        borderClass: 'border-l-emerald-500/70',
-      };
-    case 'pending':
-    case 'placing':
-      return {
-        tone: 'info',
-        label: 'pending',
-        pulse: true,
-        borderClass: 'border-l-indigo-500',
-      };
-    case 'pulling':
-      return {
-        tone: 'warn',
-        label: 'pulling image',
-        pulse: true,
-        borderClass: 'border-l-amber-500',
-      };
-    case 'starting':
-      return {
-        tone: 'warn',
-        label: 'starting',
-        pulse: true,
-        borderClass: 'border-l-amber-500',
-      };
-    case 'failing':
-      return {
-        tone: 'warn',
-        label: 'failing',
-        pulse: true,
-        borderClass: 'border-l-amber-500',
-      };
-    case 'errored':
-      return { tone: 'error', label: 'errored', pulse: false, borderClass: 'border-l-red-500' };
-    case 'stopped':
-      return { tone: 'muted', label: 'stopped', pulse: false, borderClass: '' };
-  }
+  const { tone, pulse } = deploymentTone(d?.status);
+  const label = !d
+    ? 'never deployed'
+    : d.status === 'pulling'
+      ? 'pulling image'
+      : d.status === 'pending' || d.status === 'placing'
+        ? 'pending'
+        : d.status;
+  return { tone, pulse, label, borderClass: BORDER_BY_TONE[tone] ?? '' };
 }
 
 interface Props {

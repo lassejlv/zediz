@@ -8,8 +8,12 @@ import {
   useDeleteService,
   useDeployService,
 } from '@/lib/services';
-import { useRestartDeployment, useStopDeployment } from '@/lib/deployments';
-import { workspaceQuery } from '@/lib/workspaces';
+import {
+  deploymentTone,
+  useRestartDeployment,
+  useStopDeployment,
+} from '@/lib/deployments';
+import { canAdmin, canWrite, workspaceQuery } from '@/lib/workspaces';
 import { domainsQuery } from '@/lib/domains';
 import { ApiError } from '@/lib/api';
 import {
@@ -25,11 +29,7 @@ import {
   type SemanticStatus,
 } from '@/components/ui';
 import { DomainsSection } from '@/components/domains-section';
-import type {
-  DeploymentStatus,
-  DeploymentSummary,
-  ServiceSummary,
-} from '@/lib/types';
+import type { DeploymentSummary, ServiceSummary } from '@/lib/types';
 
 export const Route = createFileRoute(
   '/w/$workspaceSlug/projects/$projectSlug/$serviceSlug',
@@ -53,10 +53,8 @@ function ServicePage() {
   const stop = useStopDeployment();
   const restart = useRestartDeployment();
 
-  const canDeploy = workspace.data ? workspace.data.role !== 'viewer' : false;
-  const canDelete = workspace.data
-    ? workspace.data.role === 'owner' || workspace.data.role === 'admin'
-    : false;
+  const canDeploy = canWrite(workspace.data);
+  const canDelete = canAdmin(workspace.data);
 
   const [error, setError] = useState<string | null>(null);
   const [activeDeploymentId, setActiveDeploymentId] = useState<string | null>(null);
@@ -216,24 +214,15 @@ interface ServiceStatus {
 }
 
 function computeServiceStatus(d: DeploymentSummary | undefined): ServiceStatus {
-  if (!d) return { tone: 'muted', label: 'never deployed', pulse: false };
-  switch (d.status) {
-    case 'running':
-      return { tone: 'ok', label: 'running', pulse: false };
-    case 'pending':
-    case 'placing':
-      return { tone: 'info', label: 'pending', pulse: true };
-    case 'pulling':
-      return { tone: 'warn', label: 'pulling image', pulse: true };
-    case 'starting':
-      return { tone: 'warn', label: 'starting', pulse: true };
-    case 'failing':
-      return { tone: 'warn', label: 'failing', pulse: true };
-    case 'errored':
-      return { tone: 'error', label: 'errored', pulse: false };
-    case 'stopped':
-      return { tone: 'muted', label: 'stopped', pulse: false };
-  }
+  const { tone, pulse } = deploymentTone(d?.status);
+  const label = !d
+    ? 'never deployed'
+    : d.status === 'pulling'
+      ? 'pulling image'
+      : d.status === 'pending' || d.status === 'placing'
+        ? 'pending'
+        : d.status;
+  return { tone, label, pulse };
 }
 
 function computeDeployLabel(latest: DeploymentSummary | undefined): string {
@@ -516,7 +505,7 @@ function DeploymentRow({
 }) {
   const stoppable =
     d.status === 'running' || d.status === 'starting' || d.status === 'pulling';
-  const status = deploymentStatusSemantic(d.status);
+  const status = deploymentTone(d.status);
   return (
     <tr
       className={[
@@ -574,28 +563,6 @@ function DeploymentRow({
       </td>
     </tr>
   );
-}
-
-function deploymentStatusSemantic(s: DeploymentStatus): {
-  tone: SemanticStatus;
-  pulse: boolean;
-} {
-  switch (s) {
-    case 'running':
-      return { tone: 'ok', pulse: false };
-    case 'pending':
-    case 'placing':
-      return { tone: 'info', pulse: true };
-    case 'pulling':
-    case 'starting':
-      return { tone: 'warn', pulse: true };
-    case 'failing':
-      return { tone: 'warn', pulse: true };
-    case 'errored':
-      return { tone: 'error', pulse: false };
-    case 'stopped':
-      return { tone: 'muted', pulse: false };
-  }
 }
 
 function truncateImage(ref: string): string {

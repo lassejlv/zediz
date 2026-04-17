@@ -2,11 +2,12 @@ import { Link } from '@tanstack/react-router';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { ArrowLeft, Plus } from 'lucide-react';
 import { NewServiceSheet } from '@/components/new-service-sheet';
-import { StatusDot, type SemanticStatus } from '@/components/ui';
+import { StatusDot } from '@/components/ui';
 import { projectQuery } from '@/lib/projects';
 import { servicesQuery, serviceDeploymentsQuery } from '@/lib/services';
-import { workspaceQuery } from '@/lib/workspaces';
-import type { DeploymentStatus, DeploymentSummary } from '@/lib/types';
+import { deploymentTone } from '@/lib/deployments';
+import { canWrite, workspaceQuery } from '@/lib/workspaces';
+import type { DeploymentSummary } from '@/lib/types';
 
 interface Props {
   workspaceSlug: string;
@@ -22,7 +23,7 @@ export function ProjectSidebar({ workspaceSlug, projectSlug }: Props) {
   });
 
   const serviceList = services.data ?? [];
-  const canCreate = workspace.data ? workspace.data.role !== 'viewer' : false;
+  const canCreate = canWrite(workspace.data);
 
   const deployments = useQueries({
     queries: serviceList.map((s) => ({
@@ -78,7 +79,7 @@ export function ProjectSidebar({ workspaceSlug, projectSlug }: Props) {
           ) : (
             serviceList.map((s, i) => {
               const latest = (deployments[i]?.data as DeploymentSummary[] | undefined)?.[0];
-              const status = serviceStatus(latest?.status);
+              const status = deploymentTone(latest?.status);
               return (
                 <Link
                   key={s.id}
@@ -102,25 +103,3 @@ export function ProjectSidebar({ workspaceSlug, projectSlug }: Props) {
   );
 }
 
-function serviceStatus(s: DeploymentStatus | undefined): {
-  tone: SemanticStatus;
-  pulse: boolean;
-} {
-  if (!s) return { tone: 'muted', pulse: false };
-  switch (s) {
-    case 'running':
-      return { tone: 'ok', pulse: false };
-    case 'pending':
-    case 'placing':
-      return { tone: 'info', pulse: true };
-    case 'pulling':
-    case 'starting':
-      return { tone: 'warn', pulse: true };
-    case 'failing':
-      return { tone: 'warn', pulse: true };
-    case 'errored':
-      return { tone: 'error', pulse: false };
-    case 'stopped':
-      return { tone: 'muted', pulse: false };
-  }
-}

@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState, type FormEvent } from 'react';
 import {
+  canAdmin,
   workspaceQuery,
   useUpdateWorkspace,
   type UpdateWorkspaceInput,
@@ -20,9 +21,7 @@ function SettingsPage() {
   const ws = useQuery(workspaceQuery(workspaceSlug));
   const update = useUpdateWorkspace(workspaceSlug);
 
-  const canManage = ws.data
-    ? ws.data.role === 'owner' || ws.data.role === 'admin'
-    : false;
+  const canManage = canAdmin(ws.data);
 
   const [name, setName] = useState('');
   const [location, setLocation] = useState('nbg1');

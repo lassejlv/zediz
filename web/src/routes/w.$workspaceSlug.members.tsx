@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useState, type FormEvent } from 'react';
 import { Plus } from 'lucide-react';
 import {
+  canAdmin,
   invitesQuery,
   membersQuery,
   useCreateInvite,
@@ -48,9 +49,7 @@ function MembersPage() {
   const updateRole = useUpdateMemberRole(workspaceSlug);
   const removeMember = useRemoveMember(workspaceSlug);
 
-  const canManage = workspace.data
-    ? workspace.data.role === 'owner' || workspace.data.role === 'admin'
-    : false;
+  const canManage = canAdmin(workspace.data);
 
   const [sheetOpen, setSheetOpen] = useState(false);
 

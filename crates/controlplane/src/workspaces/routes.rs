@@ -7,6 +7,7 @@ use zediz_common::Id;
 
 use crate::auth::AuthUser;
 use crate::error::{ApiError, ApiResult};
+use crate::projects::validate_slug;
 use crate::state::AppState;
 use crate::workspaces::membership::{self, Role};
 
@@ -390,22 +391,3 @@ async fn remove_member(
     Ok(())
 }
 
-fn validate_slug(s: &str) -> ApiResult<()> {
-    if !(2..=40).contains(&s.len()) {
-        return Err(ApiError::Validation("slug must be 2–40 chars".into()));
-    }
-    if !s
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-    {
-        return Err(ApiError::Validation(
-            "slug: lowercase letters, digits, dashes only".into(),
-        ));
-    }
-    if s.starts_with('-') || s.ends_with('-') {
-        return Err(ApiError::Validation(
-            "slug cannot start or end with '-'".into(),
-        ));
-    }
-    Ok(())
-}

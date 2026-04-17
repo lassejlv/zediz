@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useState, type FormEvent } from 'react';
 import { Plus } from 'lucide-react';
 import { sshKeysQuery, useCreateSshKey, useDeleteSshKey } from '@/lib/ssh-keys';
-import { workspaceQuery } from '@/lib/workspaces';
+import { canAdmin, workspaceQuery } from '@/lib/workspaces';
 import { ApiError } from '@/lib/api';
 import {
   Button,
@@ -37,9 +37,7 @@ function SshKeysPage() {
   const keys = useQuery(sshKeysQuery(workspaceSlug));
   const del = useDeleteSshKey(workspaceSlug);
 
-  const canManage = workspace.data
-    ? workspace.data.role === 'owner' || workspace.data.role === 'admin'
-    : false;
+  const canManage = canAdmin(workspace.data);
 
   const [sheetOpen, setSheetOpen] = useState(false);
 

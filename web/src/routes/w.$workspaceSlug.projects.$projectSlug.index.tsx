@@ -6,7 +6,7 @@ import { NewServiceSheet } from '@/components/new-service-sheet';
 import { Button, EmptyState } from '@/components/ui';
 import { projectQuery } from '@/lib/projects';
 import { servicesQuery, serviceDeploymentsQuery } from '@/lib/services';
-import { workspaceQuery } from '@/lib/workspaces';
+import { canWrite, workspaceQuery } from '@/lib/workspaces';
 import { domainsQuery } from '@/lib/domains';
 import { BoardToolbar } from '@/components/board/board-toolbar';
 import { ServiceNode, type ServiceNodeState } from '@/components/board/service-node';
@@ -67,7 +67,7 @@ function ProjectBoard() {
     return { total: nodes.length, running, deploying, errored };
   }, [nodes]);
 
-  const canCreate = workspace.data ? workspace.data.role !== 'viewer' : false;
+  const canCreate = canWrite(workspace.data);
 
   return (
     <div className="flex flex-col gap-6">

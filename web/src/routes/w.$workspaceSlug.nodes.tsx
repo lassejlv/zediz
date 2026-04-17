@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { MoreHorizontal } from 'lucide-react';
 import { useRef, useEffect, useState } from 'react';
 import { nodesQuery, useDeleteNode, useDrainNode } from '@/lib/nodes';
-import { workspaceQuery } from '@/lib/workspaces';
+import { canAdmin, workspaceQuery } from '@/lib/workspaces';
 import {
   Button,
   Card,
@@ -29,9 +29,7 @@ function NodesPage() {
   const drain = useDrainNode(workspaceSlug);
   const del = useDeleteNode(workspaceSlug);
 
-  const canManage = workspace.data
-    ? workspace.data.role === 'owner' || workspace.data.role === 'admin'
-    : false;
+  const canManage = canAdmin(workspace.data);
 
   return (
     <Stack gap={6}>

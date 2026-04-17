@@ -2,6 +2,22 @@ import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/r
 import { api } from './api';
 import type { CreatedInvite, InviteSummary, MemberRow, Role, WorkspaceSummary } from './types';
 
+/**
+ * True when the caller has write permission in the workspace: can create
+ * projects, deploy services, add domains. Viewers are excluded.
+ */
+export function canWrite(ws: { role: Role } | undefined | null): boolean {
+  return !!ws && ws.role !== 'viewer';
+}
+
+/**
+ * True when the caller can administer the workspace: provision nodes, manage
+ * members, rotate credentials. Only owners and admins.
+ */
+export function canAdmin(ws: { role: Role } | undefined | null): boolean {
+  return !!ws && (ws.role === 'owner' || ws.role === 'admin');
+}
+
 export const workspacesQuery = queryOptions({
   queryKey: ['workspaces'] as const,
   queryFn: ({ signal }) => api<WorkspaceSummary[]>('/workspaces', { signal }),

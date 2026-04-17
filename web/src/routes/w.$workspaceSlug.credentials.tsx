@@ -7,7 +7,7 @@ import {
   useCreateCredential,
   useDeleteCredential,
 } from '@/lib/credentials';
-import { workspaceQuery } from '@/lib/workspaces';
+import { canAdmin, workspaceQuery } from '@/lib/workspaces';
 import { ApiError } from '@/lib/api';
 import type { CredentialKind } from '@/lib/types';
 import {
@@ -48,9 +48,7 @@ function CredentialsPage() {
   const creds = useQuery(credentialsQuery(workspaceSlug));
   const del = useDeleteCredential(workspaceSlug);
 
-  const canManage = workspace.data
-    ? workspace.data.role === 'owner' || workspace.data.role === 'admin'
-    : false;
+  const canManage = canAdmin(workspace.data);
 
   const [sheetOpen, setSheetOpen] = useState(false);
 

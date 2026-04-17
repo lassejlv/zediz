@@ -27,3 +27,29 @@ pub async fn list_for_sync(pool: &PgPool, workspace_id: &str) -> Result<Vec<SshK
         })
         .collect())
 }
+
+/// Sync every workspace SSH key to the Hetzner account, returning the Hetzner
+/// key ids that succeeded. Individual failures are logged and skipped so a
+/// single bad key never blocks provisioning.
+pub async fn ensure_on_hetzner(
+    pool: &PgPool,
+    workspace_id: &str,
+    hetzner_token: &str,
+) -> Result<Vec<i64>> {
+    let keys = list_for_sync(pool, workspace_id).await?;
+    if keys.is_empty() {
+        return Ok(vec![]);
+    }
+    let client = zediz_hetzner::HetznerClient::new(hetzner_token);
+    let mut out = Vec::with_capacity(keys.len());
+    for k in keys {
+        match client
+            .ensure_ssh_key(&k.name, &k.public_key, &k.fingerprint)
+            .await
+        {
+            Ok(id) => out.push(id),
+            Err(e) => tracing::warn!(error = ?e, ssh_key = %k.id, "ensure ssh key on hetzner"),
+        }
+    }
+    Ok(out)
+}
