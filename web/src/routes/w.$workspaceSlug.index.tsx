@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { workspaceQuery } from '@/lib/workspaces';
 import { projectsQuery } from '@/lib/projects';
 import { nodesQuery } from '@/lib/nodes';
-import { Card } from '@/components/ui';
+import { PageHeader, StatCard, Stack } from '@/components/ui';
 
 export const Route = createFileRoute('/w/$workspaceSlug/')({
   component: OverviewPage,
@@ -18,31 +18,33 @@ function OverviewPage() {
   const projectCount = projects.data?.length ?? 0;
   const nodeCount = nodes.data?.length ?? 0;
   const readyNodes = nodes.data?.filter((n) => n.status === 'ready').length ?? 0;
+  const provisioningNodes =
+    nodes.data?.filter((n) => n.status === 'provisioning').length ?? 0;
+  const drainingNodes = nodes.data?.filter((n) => n.status === 'draining').length ?? 0;
 
   return (
-    <section className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          {workspace.data?.name ?? workspaceSlug}
-        </h1>
-        <p className="mt-1 text-sm text-[var(--color-muted)]">
-          Your role: {workspace.data?.role ?? '—'}
-        </p>
+    <Stack gap={8}>
+      <PageHeader
+        title={workspace.data?.name ?? workspaceSlug}
+        subtitle={`Your role: ${workspace.data?.role ?? '—'}`}
+      />
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard label="Projects" value={projectCount} mono />
+        <StatCard label="Nodes" value={nodeCount} mono />
+        <StatCard
+          label="Ready"
+          value={readyNodes}
+          mono
+          hint={
+            provisioningNodes > 0
+              ? `${provisioningNodes} provisioning`
+              : drainingNodes > 0
+                ? `${drainingNodes} draining`
+                : 'all healthy'
+          }
+        />
+        <StatCard label="Role" value={workspace.data?.role ?? '—'} />
       </div>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        {[
-          { label: 'Projects', value: String(projectCount) },
-          { label: 'Nodes', value: String(nodeCount) },
-          { label: 'Ready nodes', value: String(readyNodes) },
-        ].map((c) => (
-          <Card key={c.label} className="p-4">
-            <div className="text-xs uppercase tracking-wider text-[var(--color-muted)]">
-              {c.label}
-            </div>
-            <div className="mt-2 font-mono text-2xl">{c.value}</div>
-          </Card>
-        ))}
-      </div>
-    </section>
+    </Stack>
   );
 }

@@ -5,6 +5,17 @@ import {
   redirect,
   useLocation,
 } from '@tanstack/react-router';
+import {
+  LayoutDashboard,
+  FolderKanban,
+  Server,
+  Users,
+  KeyRound,
+  Terminal,
+  Settings as SettingsIcon,
+  ChevronDown,
+  type LucideIcon,
+} from 'lucide-react';
 import { meQuery } from '@/lib/auth';
 import { useWorkspaces, workspaceQuery } from '@/lib/workspaces';
 
@@ -32,68 +43,113 @@ function WorkspaceLayout() {
   }
 
   return (
-    <div className="grid grid-cols-[220px_1fr] gap-8">
-      <aside className="space-y-6">
-        <div>
-          <div className="text-xs uppercase tracking-wider text-[var(--color-muted)]">
-            Workspace
-          </div>
-          <select
-            className="mt-1 w-full border-0 bg-transparent p-0 text-sm focus:outline-none"
-            value={workspaceSlug}
-            onChange={(e) => {
-              window.location.href = `/w/${e.target.value}`;
-            }}
-          >
-            {workspaces.data?.map((w) => (
-              <option key={w.slug} value={w.slug}>
-                {w.name}
-              </option>
-            ))}
-          </select>
-          {current ? (
-            <div className="mt-1 text-xs text-[var(--color-muted)]">
-              {current.role} · {current.slug}
-            </div>
-          ) : null}
-        </div>
-        <nav className="flex flex-col gap-1 text-sm">
-          <SidebarLink to="/w/$workspaceSlug" params={{ workspaceSlug }} label="Overview" exact />
-          <SidebarLink
-            to="/w/$workspaceSlug/projects"
-            params={{ workspaceSlug }}
-            label="Projects"
-          />
-          <SidebarLink
-            to="/w/$workspaceSlug/nodes"
-            params={{ workspaceSlug }}
-            label="Nodes"
-          />
-          <SidebarLink
-            to="/w/$workspaceSlug/members"
-            params={{ workspaceSlug }}
-            label="Members"
-          />
-          <SidebarLink
-            to="/w/$workspaceSlug/credentials"
-            params={{ workspaceSlug }}
-            label="Credentials"
-          />
-          <SidebarLink
-            to="/w/$workspaceSlug/ssh-keys"
-            params={{ workspaceSlug }}
-            label="SSH keys"
-          />
-          <SidebarLink
-            to="/w/$workspaceSlug/settings"
-            params={{ workspaceSlug }}
-            label="Settings"
-          />
+    <div className="grid grid-cols-[220px_1fr] gap-10">
+      <aside className="sticky top-20 self-start">
+        <WorkspaceSwitcher
+          workspaceSlug={workspaceSlug}
+          workspaces={workspaces.data ?? []}
+          role={current?.role}
+        />
+        <nav className="mt-6 flex flex-col gap-6 text-sm">
+          <NavGroup>
+            <SidebarLink
+              to="/w/$workspaceSlug"
+              params={{ workspaceSlug }}
+              label="Overview"
+              icon={LayoutDashboard}
+              exact
+            />
+          </NavGroup>
+          <NavGroup>
+            <SidebarLink
+              to="/w/$workspaceSlug/projects"
+              params={{ workspaceSlug }}
+              label="Projects"
+              icon={FolderKanban}
+            />
+            <SidebarLink
+              to="/w/$workspaceSlug/nodes"
+              params={{ workspaceSlug }}
+              label="Nodes"
+              icon={Server}
+            />
+          </NavGroup>
+          <NavGroup>
+            <SidebarLink
+              to="/w/$workspaceSlug/members"
+              params={{ workspaceSlug }}
+              label="Members"
+              icon={Users}
+            />
+            <SidebarLink
+              to="/w/$workspaceSlug/credentials"
+              params={{ workspaceSlug }}
+              label="Credentials"
+              icon={KeyRound}
+            />
+            <SidebarLink
+              to="/w/$workspaceSlug/ssh-keys"
+              params={{ workspaceSlug }}
+              label="SSH keys"
+              icon={Terminal}
+            />
+          </NavGroup>
+          <NavGroup>
+            <SidebarLink
+              to="/w/$workspaceSlug/settings"
+              params={{ workspaceSlug }}
+              label="Settings"
+              icon={SettingsIcon}
+            />
+          </NavGroup>
         </nav>
       </aside>
-      <div>
+      <div className="min-w-0">
         <Outlet />
       </div>
+    </div>
+  );
+}
+
+function NavGroup({ children }: { children: React.ReactNode }) {
+  return <div className="flex flex-col gap-0.5">{children}</div>;
+}
+
+function WorkspaceSwitcher({
+  workspaceSlug,
+  workspaces,
+  role,
+}: {
+  workspaceSlug: string;
+  workspaces: { slug: string; name: string }[];
+  role?: string;
+}) {
+  return (
+    <div className="relative">
+      <div className="text-[10px] font-medium uppercase tracking-wider text-[var(--color-muted)]">
+        Workspace
+      </div>
+      <div className="relative mt-1">
+        <select
+          className="w-full appearance-none rounded-md border border-transparent bg-transparent py-1.5 pr-7 text-sm font-medium hover:border-[var(--color-border)] focus:border-[var(--color-accent)] focus:outline-none"
+          value={workspaceSlug}
+          onChange={(e) => {
+            window.location.href = `/w/${e.target.value}`;
+          }}
+        >
+          {workspaces.map((w) => (
+            <option key={w.slug} value={w.slug}>
+              {w.name}
+            </option>
+          ))}
+        </select>
+        <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-muted)]" />
+      </div>
+      {role ? (
+        <div className="mt-0.5 font-mono text-[11px] text-[var(--color-muted)]">
+          {role} · {workspaceSlug}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -106,6 +162,7 @@ function SidebarLink({
   to,
   params,
   label,
+  icon: Icon,
   exact,
 }: {
   to:
@@ -118,6 +175,7 @@ function SidebarLink({
     | '/w/$workspaceSlug/settings';
   params: { workspaceSlug: string };
   label: string;
+  icon: LucideIcon;
   exact?: boolean;
 }) {
   return (
@@ -125,13 +183,14 @@ function SidebarLink({
       to={to}
       params={params}
       activeOptions={{ exact }}
-      className="rounded-md px-2 py-1.5 text-[var(--color-muted)] hover:text-[var(--color-fg)]"
+      className="group flex items-center gap-2.5 rounded-md px-2 py-1.5 text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
       activeProps={{
         className:
-          'rounded-md bg-black/5 px-2 py-1.5 text-[var(--color-fg)] dark:bg-white/5',
+          'flex items-center gap-2.5 rounded-md bg-black/5 px-2 py-1.5 text-[var(--color-fg)] dark:bg-white/5',
       }}
     >
-      {label}
+      <Icon className="h-4 w-4 shrink-0" />
+      <span>{label}</span>
     </Link>
   );
 }

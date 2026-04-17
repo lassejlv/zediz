@@ -7,7 +7,7 @@ import {
   type UpdateWorkspaceInput,
 } from '@/lib/workspaces';
 import { ApiError } from '@/lib/api';
-import { Button, Card, ErrorText, Field, Input } from '@/components/ui';
+import { Button, Card, ErrorText, Field, Input, PageHeader, Stack } from '@/components/ui';
 
 export const Route = createFileRoute('/w/$workspaceSlug/settings')({
   component: SettingsPage,
@@ -65,22 +65,23 @@ function SettingsPage() {
 
   if (!canManage) {
     return (
-      <Card className="p-5">
-        <p className="text-sm text-[var(--color-muted)]">
-          Only owners or admins can change workspace settings.
-        </p>
-      </Card>
+      <Stack gap={6}>
+        <PageHeader title="Settings" />
+        <Card className="p-5">
+          <p className="text-sm text-[var(--color-muted)]">
+            Only owners or admins can change workspace settings.
+          </p>
+        </Card>
+      </Stack>
     );
   }
 
   return (
-    <section className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
-        <p className="mt-1 text-sm text-[var(--color-muted)]">
-          Hetzner region, autoscale, and cost caps for this workspace.
-        </p>
-      </div>
+    <Stack gap={6}>
+      <PageHeader
+        title="Settings"
+        subtitle="Hetzner region, autoscale, and cost caps for this workspace."
+      />
 
       <Card className="p-5">
         <form onSubmit={onSubmit} className="space-y-4">
@@ -162,6 +163,6 @@ function SettingsPage() {
           </Button>
         </form>
       </Card>
-    </section>
+    </Stack>
   );
 }
