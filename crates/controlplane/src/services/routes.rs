@@ -303,7 +303,7 @@ async fn create(
             };
             builder = chosen_builder;
             root_dir = Some(trim_opt(req.root_dir).unwrap_or_else(|| ".".into()));
-            registry_repo = trim_opt(req.registry_repo);
+            registry_repo = normalize_registry_repo(req.registry_repo);
             github_credential_id = trim_opt(req.github_credential_id);
             registry_credential_id = trim_opt(req.registry_credential_id);
             // image_ref starts NULL; filled in by the first successful build.
@@ -435,6 +435,8 @@ async fn update(
         }
     }
 
+    let registry_repo = normalize_registry_repo(req.registry_repo);
+
     let row: ServiceRow = sqlx::query_as(&format!(
         "UPDATE services SET \
             name = COALESCE($1, name), \
@@ -469,7 +471,7 @@ async fn update(
     .bind(req.dockerfile_path.as_deref())
     .bind(req.root_dir.as_deref())
     .bind(req.builder.as_deref())
-    .bind(req.registry_repo.as_deref())
+    .bind(registry_repo.as_deref())
     .bind(req.github_credential_id.as_deref())
     .bind(req.registry_credential_id.as_deref())
     .bind(project_id.to_string())
@@ -479,6 +481,10 @@ async fn update(
     .ok_or(ApiError::NotFound)?;
 
     Ok(Json(ServiceSummary::try_from(row)?))
+}
+
+fn normalize_registry_repo(repo: Option<String>) -> Option<String> {
+    trim_opt(repo).map(|value| value.to_ascii_lowercase())
 }
 
 async fn delete(

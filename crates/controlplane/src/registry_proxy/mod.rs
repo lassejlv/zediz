@@ -89,7 +89,7 @@ async fn handle(State(state): State<AppState>, req: Request) -> Response {
     // Enforce the path-scope check for anything past the discovery endpoint.
     // `/v2`, `/v2/`, `/v2/_catalog` are the ones without a `<name>` segment.
     if let Some(path_workspace) = workspace_from_path(&path) {
-        if path_workspace != creds_workspace_id {
+        if !path_workspace.eq_ignore_ascii_case(&creds_workspace_id) {
             return unauthorized();
         }
     }

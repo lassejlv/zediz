@@ -16,7 +16,7 @@ import {
   type SemanticStatus,
 } from '@/components/ui';
 import { ProvisionNodeSheet } from '@/components/provision-node-sheet';
-import type { NodeSummary } from '@/lib/types';
+import type { NodeSummary, NodeWorkloadSummary } from '@/lib/types';
 
 export const Route = createFileRoute('/w/$workspaceSlug/nodes')({
   component: NodesPage,
@@ -160,6 +160,22 @@ function NodeCard({
         />
       </div>
 
+      {n.workloads.length > 0 ? (
+        <div className="border-t border-[var(--color-border)] px-5 py-4">
+          <div className="mb-3 text-[11px] uppercase tracking-[0.18em] text-[var(--color-muted)]">
+            Active workloads
+          </div>
+          <div className="space-y-2">
+            {n.workloads.map((workload) => (
+              <WorkloadRow
+                key={`${workload.kind}-${workload.deployment_id}-${workload.build_id ?? 'runtime'}`}
+                workload={workload}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       <div className="flex items-center justify-between border-t border-[var(--color-border)] px-5 py-2.5 text-xs text-[var(--color-muted)]">
         <span>
           Added <RelativeTime date={n.created_at} />
@@ -189,6 +205,61 @@ function nodeStatusSemantic(s: string): SemanticStatus {
       return 'warn';
     case 'terminated':
     case 'errored':
+      return 'error';
+    default:
+      return 'muted';
+  }
+}
+
+function WorkloadRow({ workload }: { workload: NodeWorkloadSummary }) {
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-[var(--color-border)] bg-black/20 px-3 py-2.5 md:flex-row md:items-center md:justify-between">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="rounded-full border border-[var(--color-border)] px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-[var(--color-muted)]">
+            {workload.kind}
+          </span>
+          <span className="font-medium">
+            {workload.project_slug} / {workload.service_slug}
+          </span>
+          <StatusPill
+            status={workloadStatusSemantic(workload.status)}
+            label={workload.status}
+            pulse={['queued', 'cloning', 'building', 'pushing', 'pending', 'pulling', 'starting'].includes(workload.status)}
+          />
+        </div>
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--color-muted)]">
+          {workload.build_id ? <CopyableId value={workload.build_id} display={`build ${workload.build_id.slice(0, 8)}`} /> : null}
+          <CopyableId
+            value={workload.deployment_id}
+            display={`deploy ${workload.deployment_id.slice(0, 8)}`}
+          />
+        </div>
+      </div>
+      <div className="text-xs text-[var(--color-muted)]">
+        {workload.cpu_millis}m CPU / {formatMb(workload.memory_mb)} / {formatMb(workload.disk_mb)}
+      </div>
+    </div>
+  );
+}
+
+function workloadStatusSemantic(status: string): SemanticStatus {
+  switch (status) {
+    case 'running':
+    case 'succeeded':
+      return 'ok';
+    case 'queued':
+    case 'cloning':
+    case 'building':
+    case 'pushing':
+    case 'pending':
+    case 'placing':
+    case 'pulling':
+    case 'starting':
+      return 'warn';
+    case 'failed':
+    case 'errored':
+    case 'failing':
       return 'error';
     default:
       return 'muted';

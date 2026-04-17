@@ -36,6 +36,20 @@ pub struct NodeSummary {
     pub public_ipv4: Option<String>,
     pub last_seen_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    pub workloads: Vec<NodeWorkloadSummary>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NodeWorkloadSummary {
+    pub kind: String,
+    pub status: String,
+    pub project_slug: String,
+    pub service_slug: String,
+    pub deployment_id: Id,
+    pub build_id: Option<Id>,
+    pub cpu_millis: i32,
+    pub memory_mb: i32,
+    pub disk_mb: i32,
 }
 
 #[derive(sqlx::FromRow)]
@@ -56,9 +70,23 @@ struct NodeRow {
     created_at: DateTime<Utc>,
 }
 
-impl TryFrom<NodeRow> for NodeSummary {
+#[derive(sqlx::FromRow)]
+struct NodeWorkloadRow {
+    node_id: String,
+    kind: String,
+    status: String,
+    project_slug: String,
+    service_slug: String,
+    deployment_id: String,
+    build_id: Option<String>,
+    cpu_millis: i32,
+    memory_mb: i32,
+    disk_mb: i32,
+}
+
+impl TryFrom<(NodeRow, Vec<NodeWorkloadSummary>)> for NodeSummary {
     type Error = ApiError;
-    fn try_from(r: NodeRow) -> Result<Self, ApiError> {
+    fn try_from((r, workloads): (NodeRow, Vec<NodeWorkloadSummary>)) -> Result<Self, ApiError> {
         Ok(Self {
             id: r
                 .id
@@ -77,6 +105,32 @@ impl TryFrom<NodeRow> for NodeSummary {
             public_ipv4: r.public_ipv4,
             last_seen_at: r.last_seen_at,
             created_at: r.created_at,
+            workloads,
+        })
+    }
+}
+
+impl TryFrom<NodeWorkloadRow> for NodeWorkloadSummary {
+    type Error = ApiError;
+
+    fn try_from(r: NodeWorkloadRow) -> Result<Self, ApiError> {
+        Ok(Self {
+            kind: r.kind,
+            status: r.status,
+            project_slug: r.project_slug,
+            service_slug: r.service_slug,
+            deployment_id: r
+                .deployment_id
+                .parse()
+                .map_err(|e| ApiError::Internal(anyhow::anyhow!("{e}")))?,
+            build_id: r
+                .build_id
+                .map(|s| s.parse())
+                .transpose()
+                .map_err(|e: ulid::DecodeError| ApiError::Internal(anyhow::anyhow!("{e}")))?,
+            cpu_millis: r.cpu_millis,
+            memory_mb: r.memory_mb,
+            disk_mb: r.disk_mb,
         })
     }
 }
@@ -105,8 +159,49 @@ async fn list(
     .fetch_all(state.pool())
     .await?;
 
+    let workload_rows: Vec<NodeWorkloadRow> = sqlx::query_as(
+        "SELECT a.node_id, \
+                CASE WHEN b.id IS NULL THEN 'runtime' ELSE 'build' END AS kind, \
+                COALESCE(b.status, d.status) AS status, \
+                p.slug AS project_slug, \
+                s.slug AS service_slug, \
+                d.id AS deployment_id, \
+                b.id AS build_id, \
+                a.cpu_millis, a.memory_mb, a.disk_mb \
+         FROM node_allocations a \
+         JOIN deployments d ON d.id = a.deployment_id \
+         JOIN services s ON s.id = d.service_id \
+         JOIN projects p ON p.id = s.project_id \
+         LEFT JOIN LATERAL ( \
+            SELECT b.id, b.status \
+            FROM builds b \
+            WHERE b.deployment_id = d.id \
+              AND b.node_id = a.node_id \
+              AND b.status NOT IN ('succeeded', 'failed', 'cancelled') \
+            ORDER BY b.updated_at DESC \
+            LIMIT 1 \
+         ) b ON true \
+         WHERE p.workspace_id = $1 \
+         ORDER BY a.node_id ASC, kind DESC, a.memory_mb DESC, a.created_at ASC",
+    )
+    .bind(ctx.workspace_id.to_string())
+    .fetch_all(state.pool())
+    .await?;
+
+    let mut workloads_by_node =
+        std::collections::BTreeMap::<String, Vec<NodeWorkloadSummary>>::new();
+    for row in workload_rows {
+        workloads_by_node
+            .entry(row.node_id.clone())
+            .or_default()
+            .push(NodeWorkloadSummary::try_from(row)?);
+    }
+
     rows.into_iter()
-        .map(NodeSummary::try_from)
+        .map(|row| {
+            let workloads = workloads_by_node.remove(&row.id).unwrap_or_default();
+            NodeSummary::try_from((row, workloads))
+        })
         .collect::<Result<Vec<_>, _>>()
         .map(Json)
 }
@@ -323,4 +418,3 @@ async fn provision(
         hetzner_server_id: result.hetzner_server_id,
     }))
 }
-

@@ -192,4 +192,17 @@ export interface NodeSummary {
   public_ipv4: string | null;
   last_seen_at: string | null;
   created_at: string;
+  workloads: NodeWorkloadSummary[];
+}
+
+export interface NodeWorkloadSummary {
+  kind: 'build' | 'runtime';
+  status: string;
+  project_slug: string;
+  service_slug: string;
+  deployment_id: string;
+  build_id: string | null;
+  cpu_millis: number;
+  memory_mb: number;
+  disk_mb: number;
 }

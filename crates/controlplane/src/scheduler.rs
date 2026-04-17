@@ -200,7 +200,12 @@ async fn dispatch_build(state: &AppState, b: QueuedBuild) -> Result<()> {
 
     // Derive a repo name if the user didn't set one.
     let registry_repo = b.registry_repo.clone().unwrap_or_else(|| {
-        format!("{host}/{ws}/{svc}", host = registry_meta.url, ws = b.workspace_id, svc = b.service_id)
+        format!(
+            "{host}/{ws}/{svc}",
+            host = registry_meta.url.to_ascii_lowercase(),
+            ws = b.workspace_id.to_ascii_lowercase(),
+            svc = b.service_id.to_ascii_lowercase()
+        )
     });
     let image_tag = format!("{registry_repo}:build-{id}", id = b.build_id);
 
