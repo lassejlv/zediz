@@ -183,6 +183,7 @@ pub struct Command {
     pub deployment_id: Option<String>,
     pub kind: String,
     pub payload: JsonValue,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Serialize)]

@@ -35,7 +35,8 @@ impl Executor {
 
     pub async fn tick(&mut self) -> Result<()> {
         let body = HeartbeatBody::default();
-        let resp = self.client.heartbeat(&self.node_token, &body).await?;
+        let mut resp = self.client.heartbeat(&self.node_token, &body).await?;
+        resp.commands.sort_by_key(|cmd| cmd.created_at);
 
         let mut acks: Vec<CommandAck> = Vec::new();
         for cmd in resp.commands {
