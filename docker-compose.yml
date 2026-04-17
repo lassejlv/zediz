@@ -57,14 +57,13 @@ services:
     environment:
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
     volumes:
-      - registry_data:/var/lib/registry
+      - ${REGISTRY_STORAGE_PATH:-./data/registry}:/var/lib/registry
     networks:
       - zediz
 
 volumes:
   caddy_data:
   caddy_config:
-  registry_data:
 
 networks:
   zediz:
