@@ -38,7 +38,7 @@ pub fn router() -> Router<AppState> {
 const SERVICE_COLUMNS: &str =
     "id, slug, name, source, image_ref, env_vars, ports, resources, \
      replicas, restart_policy, git_repo, git_branch, git_commit, \
-     dockerfile_path, build_context, registry_repo, \
+     dockerfile_path, root_dir, builder, registry_repo, \
      github_credential_id, registry_credential_id, created_at, updated_at";
 
 #[derive(Serialize)]
@@ -57,7 +57,8 @@ pub struct ServiceSummary {
     pub git_branch: Option<String>,
     pub git_commit: Option<String>,
     pub dockerfile_path: Option<String>,
-    pub build_context: Option<String>,
+    pub root_dir: Option<String>,
+    pub builder: String,
     pub registry_repo: Option<String>,
     pub github_credential_id: Option<Id>,
     pub registry_credential_id: Option<Id>,
@@ -81,7 +82,8 @@ struct ServiceRow {
     git_branch: Option<String>,
     git_commit: Option<String>,
     dockerfile_path: Option<String>,
-    build_context: Option<String>,
+    root_dir: Option<String>,
+    builder: String,
     registry_repo: Option<String>,
     github_credential_id: Option<String>,
     registry_credential_id: Option<String>,
@@ -113,7 +115,8 @@ impl TryFrom<ServiceRow> for ServiceSummary {
             git_branch: r.git_branch,
             git_commit: r.git_commit,
             dockerfile_path: r.dockerfile_path,
-            build_context: r.build_context,
+            root_dir: r.root_dir,
+            builder: r.builder,
             registry_repo: r.registry_repo,
             github_credential_id: r
                 .github_credential_id
@@ -195,7 +198,9 @@ pub struct CreateServiceRequest {
     #[serde(default)]
     pub dockerfile_path: Option<String>,
     #[serde(default)]
-    pub build_context: Option<String>,
+    pub root_dir: Option<String>,
+    #[serde(default)]
+    pub builder: Option<String>,
     #[serde(default)]
     pub registry_repo: Option<String>,
     #[serde(default)]
@@ -244,7 +249,7 @@ async fn create(
     }
 
     // Branch on source to pick which fields are required and which are rejected.
-    let (image_ref, git_repo, git_branch, dockerfile_path, build_context, registry_repo,
+    let (image_ref, git_repo, git_branch, dockerfile_path, root_dir, builder, registry_repo,
          github_credential_id, registry_credential_id);
     match source {
         "image" => {
@@ -253,7 +258,8 @@ async fn create(
             if req.git_repo.is_some()
                 || req.git_branch.is_some()
                 || req.dockerfile_path.is_some()
-                || req.build_context.is_some()
+                || req.root_dir.is_some()
+                || req.builder.is_some()
                 || req.registry_repo.is_some()
                 || req.github_credential_id.is_some()
                 || req.registry_credential_id.is_some()
@@ -266,7 +272,8 @@ async fn create(
             git_repo = None;
             git_branch = None;
             dockerfile_path = None;
-            build_context = None;
+            root_dir = None;
+            builder = "dockerfile".to_string();
             registry_repo = None;
             github_credential_id = None;
             registry_credential_id = None;
@@ -277,10 +284,25 @@ async fn create(
                     .ok_or_else(|| ApiError::Validation("git_repo is required".into()))?,
             );
             git_branch = Some(trim_opt(req.git_branch).unwrap_or_else(|| "main".into()));
-            dockerfile_path = Some(
-                trim_opt(req.dockerfile_path).unwrap_or_else(|| "Dockerfile".into()),
-            );
-            build_context = Some(trim_opt(req.build_context).unwrap_or_else(|| ".".into()));
+            let chosen_builder = req
+                .builder
+                .as_deref()
+                .unwrap_or("dockerfile")
+                .to_string();
+            if !matches!(chosen_builder.as_str(), "dockerfile" | "railpack") {
+                return Err(ApiError::Validation(
+                    "builder must be 'dockerfile' or 'railpack'".into(),
+                ));
+            }
+            dockerfile_path = if chosen_builder == "dockerfile" {
+                Some(trim_opt(req.dockerfile_path).unwrap_or_else(|| "Dockerfile".into()))
+            } else {
+                // dockerfile_path is ignored for Railpack; store NULL so it
+                // doesn't look meaningful in the UI.
+                None
+            };
+            builder = chosen_builder;
+            root_dir = Some(trim_opt(req.root_dir).unwrap_or_else(|| ".".into()));
             registry_repo = trim_opt(req.registry_repo);
             github_credential_id = trim_opt(req.github_credential_id);
             registry_credential_id = trim_opt(req.registry_credential_id);
@@ -297,8 +319,8 @@ async fn create(
         "INSERT INTO services ( \
             id, project_id, slug, name, source, image_ref, env_vars, ports, resources, \
             replicas, restart_policy, git_repo, git_branch, dockerfile_path, \
-            build_context, registry_repo, github_credential_id, registry_credential_id \
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) \
+            root_dir, builder, registry_repo, github_credential_id, registry_credential_id \
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) \
          ON CONFLICT (project_id, slug) DO NOTHING \
          RETURNING {cols}",
         cols = SERVICE_COLUMNS,
@@ -318,7 +340,8 @@ async fn create(
         .bind(git_repo.as_deref())
         .bind(git_branch.as_deref())
         .bind(dockerfile_path.as_deref())
-        .bind(build_context.as_deref())
+        .bind(root_dir.as_deref())
+        .bind(&builder)
         .bind(registry_repo.as_deref())
         .bind(github_credential_id.as_deref())
         .bind(registry_credential_id.as_deref())
@@ -373,7 +396,9 @@ pub struct UpdateServiceRequest {
     #[serde(default)]
     pub dockerfile_path: Option<String>,
     #[serde(default)]
-    pub build_context: Option<String>,
+    pub root_dir: Option<String>,
+    #[serde(default)]
+    pub builder: Option<String>,
     #[serde(default)]
     pub registry_repo: Option<String>,
     #[serde(default)]
@@ -402,6 +427,13 @@ async fn update(
             return Err(ApiError::Validation("replicas must be >= 1".into()));
         }
     }
+    if let Some(b) = &req.builder {
+        if !matches!(b.as_str(), "dockerfile" | "railpack") {
+            return Err(ApiError::Validation(
+                "builder must be 'dockerfile' or 'railpack'".into(),
+            ));
+        }
+    }
 
     let row: ServiceRow = sqlx::query_as(&format!(
         "UPDATE services SET \
@@ -415,12 +447,13 @@ async fn update(
             git_repo = COALESCE($8, git_repo), \
             git_branch = COALESCE($9, git_branch), \
             dockerfile_path = COALESCE($10, dockerfile_path), \
-            build_context = COALESCE($11, build_context), \
-            registry_repo = COALESCE($12, registry_repo), \
-            github_credential_id = COALESCE($13, github_credential_id), \
-            registry_credential_id = COALESCE($14, registry_credential_id), \
+            root_dir = COALESCE($11, root_dir), \
+            builder = COALESCE($12, builder), \
+            registry_repo = COALESCE($13, registry_repo), \
+            github_credential_id = COALESCE($14, github_credential_id), \
+            registry_credential_id = COALESCE($15, registry_credential_id), \
             updated_at = now() \
-         WHERE project_id = $15 AND slug = $16 \
+         WHERE project_id = $16 AND slug = $17 \
          RETURNING {cols}",
         cols = SERVICE_COLUMNS,
     ))
@@ -434,7 +467,8 @@ async fn update(
     .bind(req.git_repo.as_deref())
     .bind(req.git_branch.as_deref())
     .bind(req.dockerfile_path.as_deref())
-    .bind(req.build_context.as_deref())
+    .bind(req.root_dir.as_deref())
+    .bind(req.builder.as_deref())
     .bind(req.registry_repo.as_deref())
     .bind(req.github_credential_id.as_deref())
     .bind(req.registry_credential_id.as_deref())

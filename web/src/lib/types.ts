@@ -88,6 +88,7 @@ export type EnvVars = Record<string, string>;
 export type RestartPolicy = 'no' | 'on-failure' | 'always';
 
 export type ServiceSource = 'image' | 'git';
+export type ServiceBuilder = 'dockerfile' | 'railpack';
 
 export interface ServiceSummary {
   id: string;
@@ -104,7 +105,8 @@ export interface ServiceSummary {
   git_branch: string | null;
   git_commit: string | null;
   dockerfile_path: string | null;
-  build_context: string | null;
+  root_dir: string | null;
+  builder: ServiceBuilder;
   registry_repo: string | null;
   github_credential_id: string | null;
   registry_credential_id: string | null;

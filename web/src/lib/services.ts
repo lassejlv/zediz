@@ -60,7 +60,8 @@ export interface CreateServiceInput {
   git_repo?: string;
   git_branch?: string;
   dockerfile_path?: string;
-  build_context?: string;
+  root_dir?: string;
+  builder?: 'dockerfile' | 'railpack';
   registry_repo?: string;
   github_credential_id?: string;
   registry_credential_id?: string;

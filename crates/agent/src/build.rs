@@ -18,8 +18,11 @@ pub struct BuildSpec {
     pub service_id: String,
     pub git_repo: String,
     pub git_branch: String,
-    pub dockerfile_path: String,
-    pub build_context: String,
+    pub builder: String,
+    /// Only meaningful when `builder == "dockerfile"`.
+    #[serde(default)]
+    pub dockerfile_path: Option<String>,
+    pub root_dir: String,
     pub image_tag: String,
     #[serde(default)]
     pub github_pat: Option<String>,
@@ -33,6 +36,11 @@ pub struct RegistryAuth {
     pub username: String,
     pub password: String,
 }
+
+/// BuildKit frontend image used to interpret a railpack-generated plan. This
+/// is the canonical image published by the railpack maintainers; BuildKit
+/// pulls it on first use.
+const RAILPACK_FRONTEND: &str = "ghcr.io/railwayapp/railpack-frontend";
 
 pub async fn run_build(
     client: &ControlPlaneClient,
@@ -115,6 +123,10 @@ async fn do_build(
     // form is derivable client-side.
     let git_commit = git_rev_parse(work).await?;
 
+    // The CWD for the build is the repo's root_dir. For a monorepo this is
+    // the subdir that owns the service.
+    let build_cwd = resolve_root_dir(work, &spec.root_dir)?;
+
     // 2) Log in to the registry (if creds supplied).
     if let Some(reg) = &spec.registry {
         let mut login = Command::new("docker");
@@ -157,24 +169,15 @@ async fn do_build(
         .await?;
 
     let meta_path = work.join("build-meta.json");
-    let mut cmd = Command::new("docker");
-    cmd.args([
-        "buildx",
-        "build",
-        "--platform",
-        "linux/amd64",
-        "--file",
-        &spec.dockerfile_path,
-        "--tag",
-        &spec.image_tag,
-        "--push",
-        "--metadata-file",
-    ])
-    .arg(&meta_path)
-    .arg(&spec.build_context)
-    .current_dir(work);
-
-    run_logged(client, node_token, &spec.deployment_id, &mut cmd, "buildx").await?;
+    match spec.builder.as_str() {
+        "dockerfile" => {
+            build_with_dockerfile(client, node_token, spec, &build_cwd, &meta_path).await?;
+        }
+        "railpack" => {
+            build_with_railpack(client, node_token, spec, &build_cwd, &meta_path).await?;
+        }
+        other => bail!("unsupported builder: {other}"),
+    }
 
     // 4) Read digest out of the metadata file buildx wrote.
     let digest = read_digest(&meta_path)
@@ -195,6 +198,97 @@ async fn do_build(
         )
         .await?;
     Ok(())
+}
+
+async fn build_with_dockerfile(
+    client: &ControlPlaneClient,
+    node_token: &str,
+    spec: &BuildSpec,
+    cwd: &Path,
+    meta_path: &Path,
+) -> Result<()> {
+    let dockerfile = spec
+        .dockerfile_path
+        .as_deref()
+        .unwrap_or("Dockerfile");
+    let mut cmd = Command::new("docker");
+    cmd.args([
+        "buildx",
+        "build",
+        "--platform",
+        "linux/amd64",
+        "--file",
+        dockerfile,
+        "--tag",
+        &spec.image_tag,
+        "--push",
+        "--metadata-file",
+    ])
+    .arg(meta_path)
+    .arg(".")
+    .current_dir(cwd);
+
+    run_logged(client, node_token, &spec.deployment_id, &mut cmd, "buildx").await
+}
+
+async fn build_with_railpack(
+    client: &ControlPlaneClient,
+    node_token: &str,
+    spec: &BuildSpec,
+    cwd: &Path,
+    meta_path: &Path,
+) -> Result<()> {
+    // Railpack's "custom frontend" workflow:
+    //   1. `railpack prepare <dir>` writes a BuildKit-consumable plan.json
+    //   2. `docker buildx build -f plan.json --build-arg BUILDKIT_SYNTAX=<frontend>`
+    //      hands the plan to the railpack frontend, which turns it into
+    //      layers. Push + metadata-file work the same as a plain buildx.
+    let plan_path = cwd.join("railpack-plan.json");
+    let mut prepare = Command::new("railpack");
+    prepare
+        .args(["prepare", ".", "--plan-out"])
+        .arg(&plan_path)
+        .current_dir(cwd);
+    run_logged(client, node_token, &spec.deployment_id, &mut prepare, "railpack-prepare").await?;
+
+    let mut cmd = Command::new("docker");
+    cmd.args([
+        "buildx",
+        "build",
+        "--platform",
+        "linux/amd64",
+        "--build-arg",
+    ])
+    .arg(format!("BUILDKIT_SYNTAX={RAILPACK_FRONTEND}"))
+    .args(["--file"])
+    .arg(&plan_path)
+    .args(["--tag", &spec.image_tag, "--push", "--metadata-file"])
+    .arg(meta_path)
+    .arg(".")
+    .current_dir(cwd);
+
+    run_logged(client, node_token, &spec.deployment_id, &mut cmd, "railpack-build").await
+}
+
+/// Resolve `root_dir` relative to the clone directory, rejecting paths that
+/// escape it (absolute or `..` components).
+fn resolve_root_dir(clone_dir: &Path, root_dir: &str) -> Result<PathBuf> {
+    let rel = Path::new(root_dir.trim());
+    if rel.is_absolute() {
+        bail!("root_dir must be relative, got {root_dir:?}");
+    }
+    let mut out = clone_dir.to_path_buf();
+    for comp in rel.components() {
+        match comp {
+            std::path::Component::Normal(c) => out.push(c),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                bail!("root_dir may not contain '..': {root_dir:?}");
+            }
+            _ => bail!("unsupported root_dir component in {root_dir:?}"),
+        }
+    }
+    Ok(out)
 }
 
 /// Rewrite `https://github.com/foo/bar.git` to `https://<pat>@github.com/foo/bar.git`

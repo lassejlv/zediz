@@ -29,6 +29,11 @@ RUN apt-get update \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
         docker-ce-cli docker-buildx-plugin \
+ && rm -rf /var/lib/apt/lists/*
+# Railpack — used when a git service opts into `builder=railpack` instead of a
+# hand-written Dockerfile. The install script drops a single statically-linked
+# binary; BuildKit fetches the railpack frontend image on demand.
+RUN curl -fsSL https://railpack.com/install.sh | bash -s -- -y -b /usr/local/bin \
  && apt-get purge -y --auto-remove gnupg curl \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /build/target/release/zediz-agent /usr/local/bin/zediz-agent

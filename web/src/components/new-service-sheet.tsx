@@ -41,8 +41,9 @@ export function NewServiceSheet({ workspaceSlug, projectSlug, children }: Props)
   // Git-only fields
   const [gitRepo, setGitRepo] = useState('');
   const [gitBranch, setGitBranch] = useState('main');
+  const [builder, setBuilder] = useState<'dockerfile' | 'railpack'>('dockerfile');
   const [dockerfilePath, setDockerfilePath] = useState('Dockerfile');
-  const [buildContext, setBuildContext] = useState('.');
+  const [rootDir, setRootDir] = useState('.');
   const [registryRepo, setRegistryRepo] = useState('');
   const [githubCredId, setGithubCredId] = useState('');
   const [registryCredId, setRegistryCredId] = useState('');
@@ -62,8 +63,9 @@ export function NewServiceSheet({ workspaceSlug, projectSlug, children }: Props)
     setDiskMb('');
     setGitRepo('');
     setGitBranch('main');
+    setBuilder('dockerfile');
     setDockerfilePath('Dockerfile');
-    setBuildContext('.');
+    setRootDir('.');
     setRegistryRepo('');
     setGithubCredId('');
     setRegistryCredId('');
@@ -103,8 +105,11 @@ export function NewServiceSheet({ workspaceSlug, projectSlug, children }: Props)
         if (!registryCredId) throw new Error('pick a registry credential');
         base.git_repo = gitRepo.trim();
         base.git_branch = gitBranch.trim() || 'main';
-        base.dockerfile_path = dockerfilePath.trim() || 'Dockerfile';
-        base.build_context = buildContext.trim() || '.';
+        base.builder = builder;
+        base.root_dir = rootDir.trim() || '.';
+        if (builder === 'dockerfile') {
+          base.dockerfile_path = dockerfilePath.trim() || 'Dockerfile';
+        }
         if (registryRepo.trim()) base.registry_repo = registryRepo.trim();
         base.registry_credential_id = registryCredId;
         if (githubCredId) base.github_credential_id = githubCredId;
@@ -185,10 +190,12 @@ export function NewServiceSheet({ workspaceSlug, projectSlug, children }: Props)
               setGitRepo={setGitRepo}
               gitBranch={gitBranch}
               setGitBranch={setGitBranch}
+              builder={builder}
+              setBuilder={setBuilder}
               dockerfilePath={dockerfilePath}
               setDockerfilePath={setDockerfilePath}
-              buildContext={buildContext}
-              setBuildContext={setBuildContext}
+              rootDir={rootDir}
+              setRootDir={setRootDir}
               registryRepo={registryRepo}
               setRegistryRepo={setRegistryRepo}
               githubCredId={githubCredId}
@@ -313,10 +320,12 @@ function GitFields({
   setGitRepo,
   gitBranch,
   setGitBranch,
+  builder,
+  setBuilder,
   dockerfilePath,
   setDockerfilePath,
-  buildContext,
-  setBuildContext,
+  rootDir,
+  setRootDir,
   registryRepo,
   setRegistryRepo,
   githubCredId,
@@ -330,10 +339,12 @@ function GitFields({
   setGitRepo: (v: string) => void;
   gitBranch: string;
   setGitBranch: (v: string) => void;
+  builder: 'dockerfile' | 'railpack';
+  setBuilder: (v: 'dockerfile' | 'railpack') => void;
   dockerfilePath: string;
   setDockerfilePath: (v: string) => void;
-  buildContext: string;
-  setBuildContext: (v: string) => void;
+  rootDir: string;
+  setRootDir: (v: string) => void;
   registryRepo: string;
   setRegistryRepo: (v: string) => void;
   githubCredId: string;
@@ -365,6 +376,38 @@ function GitFields({
             onChange={(e) => setGitBranch(e.target.value)}
           />
         </Field>
+        <Field
+          label="Root dir"
+          htmlFor="svc-root-dir"
+          hint="Subdir inside the repo (monorepos). Both the build and Railpack scan run here."
+        >
+          <Input
+            id="svc-root-dir"
+            placeholder="."
+            value={rootDir}
+            onChange={(e) => setRootDir(e.target.value)}
+          />
+        </Field>
+      </div>
+      <Field
+        label="Builder"
+        htmlFor="svc-builder"
+        hint={
+          builder === 'railpack'
+            ? 'Railpack auto-detects the stack (Node, Python, Go, Bun, etc.) from files in the root dir. No Dockerfile needed.'
+            : 'Dockerfile path is relative to the root dir.'
+        }
+      >
+        <Select
+          id="svc-builder"
+          value={builder}
+          onChange={(e) => setBuilder(e.target.value as 'dockerfile' | 'railpack')}
+        >
+          <option value="dockerfile">Dockerfile</option>
+          <option value="railpack">Railpack (auto-detect)</option>
+        </Select>
+      </Field>
+      {builder === 'dockerfile' ? (
         <Field label="Dockerfile" htmlFor="svc-dockerfile">
           <Input
             id="svc-dockerfile"
@@ -373,19 +416,7 @@ function GitFields({
             onChange={(e) => setDockerfilePath(e.target.value)}
           />
         </Field>
-      </div>
-      <Field
-        label="Build context"
-        htmlFor="svc-build-context"
-        hint="Dir passed to `docker buildx build`, relative to the repo root."
-      >
-        <Input
-          id="svc-build-context"
-          placeholder="."
-          value={buildContext}
-          onChange={(e) => setBuildContext(e.target.value)}
-        />
-      </Field>
+      ) : null}
       <Field
         label="Registry credential"
         htmlFor="svc-registry-cred"

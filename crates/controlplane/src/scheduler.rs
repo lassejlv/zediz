@@ -112,8 +112,9 @@ struct QueuedBuild {
     workspace_id: String,
     git_repo: String,
     git_branch: String,
-    dockerfile_path: String,
-    build_context: String,
+    builder: String,
+    dockerfile_path: Option<String>,
+    root_dir: String,
     registry_repo: Option<String>,
     github_credential_id: Option<String>,
     registry_credential_id: Option<String>,
@@ -128,8 +129,9 @@ async fn fetch_queued_builds(pool: &PgPool) -> Result<Vec<QueuedBuild>> {
         workspace_id: String,
         git_repo: Option<String>,
         git_branch: Option<String>,
+        builder: String,
         dockerfile_path: Option<String>,
-        build_context: Option<String>,
+        root_dir: Option<String>,
         registry_repo: Option<String>,
         github_credential_id: Option<String>,
         registry_credential_id: Option<String>,
@@ -137,8 +139,8 @@ async fn fetch_queued_builds(pool: &PgPool) -> Result<Vec<QueuedBuild>> {
 
     let rows: Vec<Row> = sqlx::query_as(
         "SELECT b.id AS build_id, b.deployment_id, s.id AS service_id, w.id AS workspace_id, \
-                s.git_repo, s.git_branch, s.dockerfile_path, s.build_context, s.registry_repo, \
-                s.github_credential_id, s.registry_credential_id \
+                s.git_repo, s.git_branch, s.builder, s.dockerfile_path, s.root_dir, \
+                s.registry_repo, s.github_credential_id, s.registry_credential_id \
          FROM builds b \
          JOIN services s ON s.id = b.service_id \
          JOIN projects p ON p.id = s.project_id \
@@ -165,8 +167,9 @@ async fn fetch_queued_builds(pool: &PgPool) -> Result<Vec<QueuedBuild>> {
             workspace_id: r.workspace_id,
             git_repo,
             git_branch: r.git_branch.unwrap_or_else(|| "main".into()),
-            dockerfile_path: r.dockerfile_path.unwrap_or_else(|| "Dockerfile".into()),
-            build_context: r.build_context.unwrap_or_else(|| ".".into()),
+            builder: r.builder,
+            dockerfile_path: r.dockerfile_path,
+            root_dir: r.root_dir.unwrap_or_else(|| ".".into()),
             registry_repo: r.registry_repo,
             github_credential_id: r.github_credential_id,
             registry_credential_id: r.registry_credential_id,
@@ -256,8 +259,9 @@ async fn dispatch_build(state: &AppState, b: QueuedBuild) -> Result<()> {
         service_id: &b.service_id,
         git_repo: &b.git_repo,
         git_branch: &b.git_branch,
-        dockerfile_path: &b.dockerfile_path,
-        build_context: &b.build_context,
+        builder: &b.builder,
+        dockerfile_path: b.dockerfile_path.as_deref(),
+        root_dir: &b.root_dir,
         image_tag: &image_tag,
         github_pat: github_pat.as_deref(),
         registry: Some(RegistryAuth {
