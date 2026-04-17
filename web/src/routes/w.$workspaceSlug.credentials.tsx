@@ -175,18 +175,55 @@ function AddCredentialSheet({
   workspaceSlug: string;
 }) {
   const create = useCreateCredential(workspaceSlug);
+  const settings = usePublicSettings();
+  const bundledRegistryHost = settings.data?.registry_site ?? null;
+
   const [kind, setKind] = useState<CredentialKind>('hetzner_api_token');
   const [name, setName] = useState('');
   const [secret, setSecret] = useState('');
+  const [registryUrl, setRegistryUrl] = useState('');
+  const [registryUsername, setRegistryUsername] = useState('');
   const [error, setError] = useState<string | null>(null);
+
+  // When the sheet opens, pre-fill the URL with the bundled host. Users who
+  // bring an external registry just overwrite it.
+  const effectiveUrl = registryUrl.trim() || bundledRegistryHost || '';
+  const urlIsBundled =
+    bundledRegistryHost !== null &&
+    hostFromUrl(effectiveUrl) === bundledRegistryHost.toLowerCase();
+
+  function reset() {
+    setName('');
+    setSecret('');
+    setRegistryUrl('');
+    setRegistryUsername('');
+    setError(null);
+  }
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
     try {
-      await create.mutateAsync({ kind, name, secret });
-      setName('');
-      setSecret('');
+      let metadata: Record<string, unknown> | undefined;
+      if (kind === 'registry') {
+        if (!effectiveUrl) {
+          setError('Registry URL is required');
+          return;
+        }
+        // For bundled-registry creds the server will overwrite username with
+        // the credential id; we only need username for external registries
+        // (GHCR, Docker Hub, user-hosted).
+        if (!urlIsBundled && !registryUsername.trim()) {
+          setError('Username is required for external registries');
+          return;
+        }
+        metadata = {
+          url: effectiveUrl,
+          ...(urlIsBundled ? {} : { username: registryUsername.trim() }),
+        };
+      }
+      await create.mutateAsync({ kind, name, secret, metadata });
+      reset();
       onOpenChange(false);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Something went wrong');
@@ -194,7 +231,13 @@ function AddCredentialSheet({
   }
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
+    <Sheet
+      open={open}
+      onOpenChange={(next) => {
+        onOpenChange(next);
+        if (!next) reset();
+      }}
+    >
       <SheetContent>
         <SheetHeader>
           <SheetTitle>Add credential</SheetTitle>
@@ -224,7 +267,49 @@ function AddCredentialSheet({
               onChange={(e) => setName(e.target.value)}
             />
           </Field>
-          <Field label="Secret" htmlFor="cred-secret">
+          {kind === 'registry' ? (
+            <>
+              <Field
+                label="Registry URL"
+                htmlFor="cred-registry-url"
+                hint={
+                  bundledRegistryHost
+                    ? `Defaults to the bundled registry (${bundledRegistryHost}). Change it for GHCR / Docker Hub / self-hosted.`
+                    : 'e.g. ghcr.io or docker.io'
+                }
+              >
+                <Input
+                  id="cred-registry-url"
+                  placeholder={bundledRegistryHost ?? 'ghcr.io'}
+                  value={registryUrl}
+                  onChange={(e) => setRegistryUrl(e.target.value)}
+                />
+              </Field>
+              {urlIsBundled ? (
+                <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-elevated)] px-3 py-2 text-[11px] text-[var(--color-muted)]">
+                  Username will be auto-generated (the credential's ULID) so
+                  the built-in auth proxy can scope access to this workspace.
+                </div>
+              ) : (
+                <Field
+                  label="Username"
+                  htmlFor="cred-registry-username"
+                  hint="Registry login username (e.g. your GitHub username for GHCR)."
+                >
+                  <Input
+                    id="cred-registry-username"
+                    required
+                    value={registryUsername}
+                    onChange={(e) => setRegistryUsername(e.target.value)}
+                  />
+                </Field>
+              )}
+            </>
+          ) : null}
+          <Field
+            label={kind === 'registry' ? 'Password' : 'Secret'}
+            htmlFor="cred-secret"
+          >
             <Input
               id="cred-secret"
               type="password"
@@ -249,4 +334,12 @@ function AddCredentialSheet({
       </SheetContent>
     </Sheet>
   );
+}
+
+function hostFromUrl(url: string): string {
+  return url
+    .trim()
+    .replace(/^https?:\/\//, '')
+    .split('/')[0]
+    .toLowerCase();
 }
