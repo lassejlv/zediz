@@ -23,6 +23,7 @@ write_files:
       ZEDIZ_BOOTSTRAP_TOKEN={bootstrap_token}
       ZEDIZ_NODE_ID={node_id}
       ZEDIZ_WORKSPACE_ID={workspace_id}
+      ZEDIZ_AGENT_IMAGE={agent_image}
   - path: /etc/systemd/system/zediz-agent.service
     owner: root:root
     permissions: '0644'

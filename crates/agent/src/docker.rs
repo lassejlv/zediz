@@ -11,6 +11,7 @@ use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct ContainerSample {
@@ -55,6 +56,7 @@ impl RegistryAuth {
 }
 
 const PREFIX: &str = "zediz-";
+const DEFAULT_HOST_MOUNT_HELPER_IMAGE: &str = "ghcr.io/lassejlv/zediz-agent:latest";
 
 #[derive(Clone)]
 pub struct DockerExec {
@@ -468,9 +470,18 @@ pub struct PortSpec {
 }
 
 /// Make sure `device_path` is mounted at `host_path`, creating the
-/// directory if needed. Idempotent — reading `/proc/mounts` short-
-/// circuits when the mount already exists. The agent container runs
-/// with `CAP_SYS_ADMIN` + a `/dev` bind so the `mount` call succeeds.
+/// directory if needed.
+///
+/// When the agent itself runs in Docker on the node, the host Docker
+/// daemon only sees mounts performed in the host mount namespace. Older
+/// nodes may not have the shared-mount prep from newer cloud-init, so
+/// doing the mount only inside the agent container can leave the host
+/// path empty. In that case we run a short-lived privileged helper
+/// container with `--pid=host` and use `nsenter` to mount in the host
+/// namespace directly.
+///
+/// For local/dev runs where the agent executes on the host, we keep the
+/// simple in-process mount path.
 ///
 /// Hetzner pre-formats the volume as ext4 at create time (we set
 /// `format: "ext4"` in the create request), so no mkfs here.
@@ -478,10 +489,6 @@ async fn ensure_volume_mounted(device_path: &str, host_path: &str) -> Result<()>
     tokio::fs::create_dir_all(host_path)
         .await
         .with_context(|| format!("creating {host_path}"))?;
-
-    if already_mounted(host_path).await? {
-        return Ok(());
-    }
 
     // Wait briefly for the block device to show up — after a Hetzner
     // attach action completes, the udev link under /dev/disk/by-id/
@@ -497,6 +504,15 @@ async fn ensure_volume_mounted(device_path: &str, host_path: &str) -> Result<()>
             ));
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    if running_inside_container() {
+        ensure_volume_mounted_on_host(device_path, host_path).await?;
+        return Ok(());
+    }
+
+    if already_mounted(host_path).await? {
+        return Ok(());
     }
 
     let out = tokio::process::Command::new("mount")
@@ -519,6 +535,53 @@ async fn ensure_volume_mounted(device_path: &str, host_path: &str) -> Result<()>
     Ok(())
 }
 
+async fn ensure_volume_mounted_on_host(device_path: &str, host_path: &str) -> Result<()> {
+    let helper_image = std::env::var("ZEDIZ_AGENT_IMAGE")
+        .or_else(|_| std::env::var("ZEDIZ_AGENT_HELPER_IMAGE"))
+        .unwrap_or_else(|_| DEFAULT_HOST_MOUNT_HELPER_IMAGE.to_string());
+
+    let script = concat!(
+        "nsenter --mount=/proc/1/ns/mnt -- mkdir -p \"$1\" && ",
+        "(nsenter --mount=/proc/1/ns/mnt -- mountpoint -q \"$1\" || ",
+        " nsenter --mount=/proc/1/ns/mnt -- mount -t ext4 \"$2\" \"$1\")"
+    );
+
+    let out = tokio::process::Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--privileged",
+            "--pid=host",
+            "-v",
+            "/dev:/dev",
+            "-v",
+            "/var/lib/zediz/volumes:/var/lib/zediz/volumes",
+            "--entrypoint",
+            "/bin/sh",
+            &helper_image,
+            "-lc",
+            script,
+            "_",
+            host_path,
+            device_path,
+        ])
+        .output()
+        .await
+        .with_context(|| format!("spawning host mount helper for {device_path} -> {host_path}"))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        return Err(anyhow!(
+            "host mount helper failed ({}): {}",
+            out.status,
+            if stderr.is_empty() { stdout } else { stderr }
+        ));
+    }
+
+    Ok(())
+}
+
 async fn already_mounted(host_path: &str) -> Result<bool> {
     let contents = tokio::fs::read_to_string("/proc/mounts")
         .await
@@ -530,4 +593,8 @@ async fn already_mounted(host_path: &str) -> Result<bool> {
         fields.next();
         fields.next() == Some(host_path)
     }))
+}
+
+fn running_inside_container() -> bool {
+    Path::new("/.dockerenv").exists()
 }
