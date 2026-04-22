@@ -15,7 +15,7 @@ export const Route = createFileRoute('/w/$workspaceSlug/projects/$projectSlug')(
 
 function ProjectLayout() {
   return (
-    <div className="h-full min-w-0">
+    <div className="min-w-0">
       <Outlet />
     </div>
   );
