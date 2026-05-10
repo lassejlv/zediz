@@ -4,7 +4,7 @@ use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use zediz_common::Id;
+use driftbase_common::Id;
 
 use crate::auth::AuthUser;
 use crate::credentials;

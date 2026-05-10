@@ -760,7 +760,7 @@ async fn ensure_volume_attached(
         .await
         .context("loading Hetzner token for volume attach")?
         .ok_or_else(|| anyhow!("workspace has no Hetzner API token"))?;
-    let client = zediz_hetzner::HetznerClient::new(&token);
+    let client = driftbase_hetzner::HetznerClient::new(&token);
 
     // Detach from the current node (if any) before attaching elsewhere.
     // Hetzner auto-detaches volumes when a server is deleted, so our DB
@@ -970,7 +970,7 @@ async fn dispatch_to_agent(
             .as_deref()
             .ok_or_else(|| anyhow!("attached volume missing mount_path"))?;
         volume_device = format!("/dev/disk/by-id/scsi-0HC_Volume_{hz_id}");
-        volume_host = format!("/var/lib/zediz/volumes/{}", v.id);
+        volume_host = format!("/var/lib/driftbase/volumes/{}", v.id);
         Some(commands::VolumeMount {
             device_path: &volume_device,
             host_path: &volume_host,

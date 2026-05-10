@@ -1,30 +1,30 @@
 services:
   controlplane:
-    image: ${ZEDIZ_CONTROLPLANE_IMAGE:-ghcr.io/lassejlv/zediz-controlplane:latest}
+    image: ${DRIFTBASE_CONTROLPLANE_IMAGE:-ghcr.io/lassejlv/driftbase-controlplane:latest}
     build:
       context: .
       dockerfile: Dockerfile.controlplane
     pull_policy: always
     restart: unless-stopped
     environment:
-      ZEDIZ_BIND_ADDR: 0.0.0.0:8080
-      ZEDIZ_DATABASE_URL: ${ZEDIZ_DATABASE_URL:?ZEDIZ_DATABASE_URL is required}
-      ZEDIZ_MASTER_KEY: ${ZEDIZ_MASTER_KEY:?ZEDIZ_MASTER_KEY is required}
-      ZEDIZ_PUBLIC_URL: ${ZEDIZ_PUBLIC_URL:-https://zediz.dev}
-      ZEDIZ_COOKIE_SECURE: "true"
-      ZEDIZ_AGENT_IMAGE: ${ZEDIZ_AGENT_IMAGE:-ghcr.io/lassejlv/zediz-agent:latest}
+      DRIFTBASE_BIND_ADDR: 0.0.0.0:8080
+      DRIFTBASE_DATABASE_URL: ${DRIFTBASE_DATABASE_URL:?DRIFTBASE_DATABASE_URL is required}
+      DRIFTBASE_MASTER_KEY: ${DRIFTBASE_MASTER_KEY:?DRIFTBASE_MASTER_KEY is required}
+      DRIFTBASE_PUBLIC_URL: ${DRIFTBASE_PUBLIC_URL:-https://driftbase.dev}
+      DRIFTBASE_COOKIE_SECURE: "true"
+      DRIFTBASE_AGENT_IMAGE: ${DRIFTBASE_AGENT_IMAGE:-ghcr.io/lassejlv/driftbase-agent:latest}
       # Bundled registry plumbing; empty disables the auth proxy + the
       # credential-create `username = id` override.
-      ZEDIZ_REGISTRY_SITE: ${REGISTRY_SITE:-registry.zediz.dev}
-      ZEDIZ_REGISTRY_UPSTREAM: ${ZEDIZ_REGISTRY_UPSTREAM:-http://registry:5000}
+      DRIFTBASE_REGISTRY_SITE: ${REGISTRY_SITE:-registry.driftbase.dev}
+      DRIFTBASE_REGISTRY_UPSTREAM: ${DRIFTBASE_REGISTRY_UPSTREAM:-http://registry:5000}
       RUST_LOG: ${RUST_LOG:-info}
     expose:
       - "8080"
     networks:
-      - zediz
+      - driftbase
 
   web:
-    image: ${ZEDIZ_WEB_IMAGE:-ghcr.io/lassejlv/zediz-web:latest}
+    image: ${DRIFTBASE_WEB_IMAGE:-ghcr.io/lassejlv/driftbase-web:latest}
     build:
       context: .
       dockerfile: Dockerfile.web
@@ -37,18 +37,18 @@ services:
       - "443:443"
       - "443:443/udp"
     environment:
-      CADDY_SITE: ${CADDY_SITE:-zediz.dev}
-      CADDY_EMAIL: ${CADDY_EMAIL:-admin@zediz.dev}
-      REGISTRY_SITE: ${REGISTRY_SITE:-registry.zediz.dev}
+      CADDY_SITE: ${CADDY_SITE:-driftbase.dev}
+      CADDY_EMAIL: ${CADDY_EMAIL:-admin@driftbase.dev}
+      REGISTRY_SITE: ${REGISTRY_SITE:-registry.driftbase.dev}
     volumes:
       - caddy_data:/data
       - caddy_config:/config
     networks:
-      - zediz
+      - driftbase
 
   # Self-hosted Docker Registry for git-service build outputs. No auth on the
   # registry itself — the service publishes no host ports and is only reachable
-  # from the `zediz` docker network. The control plane's registry_proxy module
+  # from the `driftbase` docker network. The control plane's registry_proxy module
   # terminates auth (basic auth against the credentials table, with per-workspace
   # path scoping) and then forwards the request here.
   registry:
@@ -59,11 +59,11 @@ services:
     volumes:
       - ${REGISTRY_STORAGE_PATH:-./data/registry}:/var/lib/registry
     networks:
-      - zediz
+      - driftbase
 
 volumes:
   caddy_data:
   caddy_config:
 
 networks:
-  zediz:
+  driftbase:

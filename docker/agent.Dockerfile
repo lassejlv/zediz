@@ -10,14 +10,14 @@ COPY crates/ ./crates/
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
-    cargo build --release -p zediz-agent \
-    && cp target/release/zediz-agent /usr/local/bin/zediz-agent
+    cargo build --release -p driftbase-agent \
+    && cp target/release/driftbase-agent /usr/local/bin/driftbase-agent
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /usr/local/bin/zediz-agent /usr/local/bin/zediz-agent
+COPY --from=builder /usr/local/bin/driftbase-agent /usr/local/bin/driftbase-agent
 
-ENTRYPOINT ["/usr/local/bin/zediz-agent"]
+ENTRYPOINT ["/usr/local/bin/driftbase-agent"]

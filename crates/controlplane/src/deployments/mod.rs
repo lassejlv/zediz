@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
 use sqlx::PgPool;
-use zediz_common::Id;
+use driftbase_common::Id;
 
 use crate::error::{ApiError, ApiResult};
 use crate::services::routes::ServiceSummary;

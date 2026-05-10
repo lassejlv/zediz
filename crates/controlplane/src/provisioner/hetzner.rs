@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use sqlx::PgPool;
 use std::time::Duration;
-use zediz_common::Id;
-use zediz_hetzner::{pick_server_type, CreateServerRequest, HetznerClient, ServerType};
+use driftbase_common::Id;
+use driftbase_hetzner::{pick_server_type, CreateServerRequest, HetznerClient, ServerType};
 
 use crate::agent::tokens;
 use crate::config::Config;
@@ -12,8 +12,8 @@ use crate::services::Resources;
 
 /// Default Hetzner image; cloud-init inside installs docker + agent.
 const DEFAULT_IMAGE: &str = "debian-12";
-const AGENT_IMAGE_ENV: &str = "ZEDIZ_AGENT_IMAGE";
-const DEFAULT_AGENT_IMAGE: &str = "ghcr.io/lassejlv/zediz-agent:latest";
+const AGENT_IMAGE_ENV: &str = "DRIFTBASE_AGENT_IMAGE";
+const DEFAULT_AGENT_IMAGE: &str = "ghcr.io/lassejlv/driftbase-agent:latest";
 
 /// Minimum headroom multiplier: provisioned node must fit 120% of need.
 const HEADROOM: f32 = 1.2;
@@ -97,7 +97,7 @@ pub async fn provision(
     let total_memory_mb = (st.memory * 1024.0) as i32;
     let total_disk_mb = (st.disk * 1024) as i32;
 
-    let name = format!("zediz-{}", &node_id.to_string()[..8]);
+    let name = format!("driftbase-{}", &node_id.to_string()[..8]);
     let agent_image =
         std::env::var(AGENT_IMAGE_ENV).unwrap_or_else(|_| DEFAULT_AGENT_IMAGE.to_string());
     let user_data = cloud_init::render(
@@ -135,8 +135,8 @@ pub async fn provision(
         user_data: &user_data,
         start_after_create: true,
         labels: Some(serde_json::json!({
-            "zediz.workspace_id": workspace_id,
-            "zediz.node_id": node_id.to_string(),
+            "driftbase.workspace_id": workspace_id,
+            "driftbase.node_id": node_id.to_string(),
         })),
     };
 

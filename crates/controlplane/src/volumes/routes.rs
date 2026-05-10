@@ -3,8 +3,8 @@ use axum::routing::{delete, get};
 use axum::{Json, Router};
 use serde::Deserialize;
 use std::time::Duration;
-use zediz_common::Id;
-use zediz_hetzner::{CreateVolumeRequest, HetznerClient};
+use driftbase_common::Id;
+use driftbase_hetzner::{CreateVolumeRequest, HetznerClient};
 
 use crate::auth::AuthUser;
 use crate::credentials;
@@ -117,7 +117,7 @@ async fn create(
         let client = HetznerClient::new(&token);
         let created = client
             .create_volume(&CreateVolumeRequest {
-                name: &format!("zediz-{}", &volume_id),
+                name: &format!("driftbase-{}", &volume_id),
                 size: req.size_gb,
                 location: &location,
                 automount: false,

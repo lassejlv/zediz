@@ -1,5 +1,5 @@
 /// Render the cloud-init `user_data` that installs Docker, pulls the prebuilt
-/// `zediz-agent` image, and runs it under systemd. Boot-to-ready is ~60–90s
+/// `driftbase-agent` image, and runs it under systemd. Boot-to-ready is ~60–90s
 /// because all Rust compilation happens upstream in CI.
 pub fn render(
     control_plane_url: &str,
@@ -15,30 +15,30 @@ packages:
   - ca-certificates
   - curl
 write_files:
-  - path: /etc/zediz/agent.env
+  - path: /etc/driftbase/agent.env
     owner: root:root
     permissions: '0600'
     content: |
-      ZEDIZ_CONTROL_PLANE_URL={control_plane_url}
-      ZEDIZ_BOOTSTRAP_TOKEN={bootstrap_token}
-      ZEDIZ_NODE_ID={node_id}
-      ZEDIZ_WORKSPACE_ID={workspace_id}
-      ZEDIZ_AGENT_IMAGE={agent_image}
-  - path: /etc/systemd/system/zediz-agent.service
+      DRIFTBASE_CONTROL_PLANE_URL={control_plane_url}
+      DRIFTBASE_BOOTSTRAP_TOKEN={bootstrap_token}
+      DRIFTBASE_NODE_ID={node_id}
+      DRIFTBASE_WORKSPACE_ID={workspace_id}
+      DRIFTBASE_AGENT_IMAGE={agent_image}
+  - path: /etc/systemd/system/driftbase-agent.service
     owner: root:root
     permissions: '0644'
     content: |
       [Unit]
-      Description=Zediz node agent
+      Description=Driftbase node agent
       After=docker.service network-online.target
       Wants=network-online.target
       Requires=docker.service
 
       [Service]
       Type=simple
-      ExecStartPre=-/usr/bin/docker rm -f zediz-agent
+      ExecStartPre=-/usr/bin/docker rm -f driftbase-agent
       ExecStartPre=/usr/bin/docker pull {agent_image}
-      ExecStartPre=/usr/bin/mkdir -p /var/lib/zediz/volumes
+      ExecStartPre=/usr/bin/mkdir -p /var/lib/driftbase/volumes
       # rshared propagation requires the host parent to itself be a
       # shared mount. Dirs under /var are private by default, so bind
       # the volumes dir over itself and flip it shared before the agent
@@ -48,18 +48,18 @@ write_files:
       #
       # systemd ExecStartPre runs commands directly (no shell), so we
       # wrap in /bin/sh -c to use the || guard for idempotence.
-      ExecStartPre=/bin/sh -c 'mountpoint -q /var/lib/zediz/volumes || mount --bind /var/lib/zediz/volumes /var/lib/zediz/volumes'
-      ExecStartPre=/bin/sh -c 'mount --make-rshared /var/lib/zediz/volumes'
-      ExecStart=/usr/bin/docker run --rm --name zediz-agent \
+      ExecStartPre=/bin/sh -c 'mountpoint -q /var/lib/driftbase/volumes || mount --bind /var/lib/driftbase/volumes /var/lib/driftbase/volumes'
+      ExecStartPre=/bin/sh -c 'mount --make-rshared /var/lib/driftbase/volumes'
+      ExecStart=/usr/bin/docker run --rm --name driftbase-agent \
         --network host \
-        --env-file /etc/zediz/agent.env \
+        --env-file /etc/driftbase/agent.env \
         -v /var/run/docker.sock:/var/run/docker.sock \
         -v /dev:/dev \
-        -v /var/lib/zediz/volumes:/var/lib/zediz/volumes:rshared \
+        -v /var/lib/driftbase/volumes:/var/lib/driftbase/volumes:rshared \
         --cap-add=SYS_ADMIN \
         --security-opt apparmor=unconfined \
         {agent_image}
-      ExecStop=/usr/bin/docker stop zediz-agent
+      ExecStop=/usr/bin/docker stop driftbase-agent
       Restart=always
       RestartSec=5s
 
@@ -68,7 +68,7 @@ write_files:
 runcmd:
   - curl -fsSL https://get.docker.com | sh
   - systemctl daemon-reload
-  - systemctl enable --now zediz-agent.service
+  - systemctl enable --now driftbase-agent.service
 "#
     )
 }

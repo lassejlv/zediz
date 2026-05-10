@@ -20,10 +20,10 @@ impl MasterKey {
     pub fn from_base64(encoded: &str) -> Result<Self> {
         let bytes = B64
             .decode(encoded.trim())
-            .map_err(|e| anyhow!("ZEDIZ_MASTER_KEY is not valid base64: {e}"))?;
+            .map_err(|e| anyhow!("DRIFTBASE_MASTER_KEY is not valid base64: {e}"))?;
         if bytes.len() != KEY_LEN {
             return Err(anyhow!(
-                "ZEDIZ_MASTER_KEY must decode to {KEY_LEN} bytes, got {}",
+                "DRIFTBASE_MASTER_KEY must decode to {KEY_LEN} bytes, got {}",
                 bytes.len()
             ));
         }
@@ -84,7 +84,7 @@ mod tests {
     #[test]
     fn roundtrip() {
         let key = MasterKey::from_base64(&random_key_b64()).unwrap();
-        let plaintext = b"hello zediz secret";
+        let plaintext = b"hello driftbase secret";
         let ct = key.encrypt(plaintext).unwrap();
         assert_ne!(&ct[12..], plaintext);
         let pt = key.decrypt(&ct).unwrap();

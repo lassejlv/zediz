@@ -38,7 +38,7 @@ pub async fn routes_for_node(pool: &PgPool, node_id: &str) -> Result<Vec<NodeRou
         .map(|(hostname, container_port, deployment_id)| NodeRoute {
             hostname,
             container_port: container_port as u16,
-            container_name: format!("zediz-{deployment_id}"),
+            container_name: format!("driftbase-{deployment_id}"),
             deployment_id,
         })
         .collect())

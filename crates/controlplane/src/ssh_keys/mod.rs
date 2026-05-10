@@ -40,7 +40,7 @@ pub async fn ensure_on_hetzner(
     if keys.is_empty() {
         return Ok(vec![]);
     }
-    let client = zediz_hetzner::HetznerClient::new(hetzner_token);
+    let client = driftbase_hetzner::HetznerClient::new(hetzner_token);
     let mut out = Vec::with_capacity(keys.len());
     for k in keys {
         match client

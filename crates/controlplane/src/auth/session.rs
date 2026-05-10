@@ -5,9 +5,9 @@ use chrono::{DateTime, Duration, Utc};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
-use zediz_common::Id;
+use driftbase_common::Id;
 
-pub const COOKIE_NAME: &str = "zediz_session";
+pub const COOKIE_NAME: &str = "driftbase_session";
 pub const SESSION_TTL_DAYS: i64 = 30;
 
 pub struct IssuedSession {

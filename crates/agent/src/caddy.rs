@@ -12,12 +12,12 @@ use std::time::Duration;
 
 /// Name of the shared docker network all deployments + the Caddy sidecar join
 /// so Caddy can reach containers by name.
-pub const NETWORK: &str = "zediz";
-pub const CADDY_CONTAINER: &str = "zediz-caddy";
+pub const NETWORK: &str = "driftbase";
+pub const CADDY_CONTAINER: &str = "driftbase-caddy";
 pub const CADDY_IMAGE: &str = "caddy:2-alpine";
 pub const CADDY_ADMIN_URL: &str = "http://127.0.0.1:2019";
 
-/// Ensure the shared `zediz` docker network exists.
+/// Ensure the shared `driftbase` docker network exists.
 pub async fn ensure_network(docker: &Docker) -> Result<()> {
     let existing = docker.list_networks::<String>(None).await?;
     if existing.iter().any(|n| n.name.as_deref() == Some(NETWORK)) {
@@ -116,8 +116,8 @@ pub async fn ensure_running(docker: &Docker) -> Result<()> {
             ..Default::default()
         }),
         binds: Some(vec![
-            "zediz-caddy-data:/data".into(),
-            "zediz-caddy-config:/config".into(),
+            "driftbase-caddy-data:/data".into(),
+            "driftbase-caddy-config:/config".into(),
         ]),
         ..Default::default()
     };
@@ -129,7 +129,7 @@ pub async fn ensure_running(docker: &Docker) -> Result<()> {
     let bootstrap = r#"set -eu
 mkdir -p /etc/caddy
 cat > /etc/caddy/bootstrap.json <<'JSON'
-{"admin":{"listen":"0.0.0.0:2019"},"apps":{"http":{"servers":{"zediz":{"listen":[":80",":443"],"routes":[]}}}}}
+{"admin":{"listen":"0.0.0.0:2019"},"apps":{"http":{"servers":{"driftbase":{"listen":[":80",":443"],"routes":[]}}}}}
 JSON
 exec caddy run --config /etc/caddy/bootstrap.json --resume
 "#;
@@ -159,7 +159,7 @@ exec caddy run --config /etc/caddy/bootstrap.json --resume
     Ok(())
 }
 
-/// Ensure a running deployment container is attached to the shared `zediz`
+/// Ensure a running deployment container is attached to the shared `driftbase`
 /// network. Idempotent.
 pub async fn ensure_container_on_network(docker: &Docker, container: &str) -> Result<()> {
     let inspect = match docker
@@ -243,7 +243,7 @@ fn build_config(routes: &[Route]) -> JsonValue {
         "apps": {
             "http": {
                 "servers": {
-                    "zediz": {
+                    "driftbase": {
                         "listen": [":443", ":80"],
                         "routes": routes_json,
                         "automatic_https": {

@@ -3,7 +3,7 @@ use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use zediz_common::Id;
+use driftbase_common::Id;
 
 use crate::auth::AuthUser;
 use crate::error::{ApiError, ApiResult};

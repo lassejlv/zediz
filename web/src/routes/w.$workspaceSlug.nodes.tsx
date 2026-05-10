@@ -66,7 +66,7 @@ function NodesPage() {
       ) : (
         <EmptyState
           title="No nodes"
-          body="Provision one to start deploying containers. Zediz will autoscale from here when capacity fills up."
+          body="Provision one to start deploying containers. Driftbase will autoscale from here when capacity fills up."
           cta={
             canManage ? (
               <ProvisionNodeSheet

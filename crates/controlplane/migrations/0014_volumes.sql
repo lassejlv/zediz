@@ -1,5 +1,5 @@
 -- Hetzner block volumes attachable to at most one service in a workspace.
--- PLAN_ZEDIZ.md §11. One-volume-per-service invariant enforced by the
+-- PLAN_DRIFTBASE.md §11. One-volume-per-service invariant enforced by the
 -- partial unique index on attached_service_id.
 --
 -- Lifecycle:

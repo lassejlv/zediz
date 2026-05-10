@@ -1,5 +1,5 @@
 [package]
-name = "zediz-controlplane"
+name = "driftbase-controlplane"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,7 +7,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "zediz-controlplane"
+name = "driftbase-controlplane"
 path = "src/main.rs"
 
 [dependencies]
@@ -44,6 +44,6 @@ bytes.workspace = true
 once_cell.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
-zediz-common.workspace = true
-zediz-proto.workspace = true
-zediz-hetzner.workspace = true
+driftbase-common.workspace = true
+driftbase-proto.workspace = true
+driftbase-hetzner.workspace = true

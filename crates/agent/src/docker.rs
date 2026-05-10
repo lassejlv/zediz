@@ -55,8 +55,8 @@ impl RegistryAuth {
     }
 }
 
-const PREFIX: &str = "zediz-";
-const DEFAULT_HOST_MOUNT_HELPER_IMAGE: &str = "ghcr.io/lassejlv/zediz-agent:latest";
+const PREFIX: &str = "driftbase-";
+const DEFAULT_HOST_MOUNT_HELPER_IMAGE: &str = "ghcr.io/lassejlv/driftbase-agent:latest";
 
 #[derive(Clone)]
 pub struct DockerExec {
@@ -119,8 +119,8 @@ impl DockerExec {
         }
 
         let mut labels = HashMap::new();
-        labels.insert("zediz.deployment_id".into(), spec.deployment_id.clone());
-        labels.insert("zediz.managed".into(), "true".into());
+        labels.insert("driftbase.deployment_id".into(), spec.deployment_id.clone());
+        labels.insert("driftbase.managed".into(), "true".into());
 
         // If a Hetzner volume is attached, make sure it's mounted on the
         // host before handing a bind to bollard. This is idempotent —
@@ -152,7 +152,7 @@ impl DockerExec {
                 name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
                 ..Default::default()
             }),
-            // Join the shared `zediz` network so Caddy can reach this
+            // Join the shared `driftbase` network so Caddy can reach this
             // container by name for domain routing.
             network_mode: Some(crate::caddy::NETWORK.into()),
             mounts,
@@ -287,7 +287,7 @@ impl DockerExec {
         }))
     }
 
-    /// Inspect the zediz-managed container for a deployment. Returns
+    /// Inspect the driftbase-managed container for a deployment. Returns
     /// `Some(container_id)` only if the container exists *and* is running.
     /// Missing, exited, or paused containers — and 404s from the daemon —
     /// all map to `Ok(None)` so callers can treat this as a predicate.
@@ -536,8 +536,8 @@ async fn ensure_volume_mounted(device_path: &str, host_path: &str) -> Result<()>
 }
 
 async fn ensure_volume_mounted_on_host(device_path: &str, host_path: &str) -> Result<()> {
-    let helper_image = std::env::var("ZEDIZ_AGENT_IMAGE")
-        .or_else(|_| std::env::var("ZEDIZ_AGENT_HELPER_IMAGE"))
+    let helper_image = std::env::var("DRIFTBASE_AGENT_IMAGE")
+        .or_else(|_| std::env::var("DRIFTBASE_AGENT_HELPER_IMAGE"))
         .unwrap_or_else(|_| DEFAULT_HOST_MOUNT_HELPER_IMAGE.to_string());
 
     let script = concat!(
@@ -555,7 +555,7 @@ async fn ensure_volume_mounted_on_host(device_path: &str, host_path: &str) -> Re
             "-v",
             "/dev:/dev",
             "-v",
-            "/var/lib/zediz/volumes:/var/lib/zediz/volumes",
+            "/var/lib/driftbase/volumes:/var/lib/driftbase/volumes",
             "--entrypoint",
             "/bin/sh",
             &helper_image,

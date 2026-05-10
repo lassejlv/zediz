@@ -1,8 +1,8 @@
-# Zediz
+# Driftbase
 
-Self-hosted PaaS on Hetzner: a Rust control plane + node agent that turns a Hetzner API token into an elastic, auto-scaling container platform. Point it at a Docker image or a Git repo, hit deploy, and Zediz places the workload on an existing node or provisions a new one automatically.
+Self-hosted PaaS on Hetzner: a Rust control plane + node agent that turns a Hetzner API token into an elastic, auto-scaling container platform. Point it at a Docker image or a Git repo, hit deploy, and Driftbase places the workload on an existing node or provisions a new one automatically.
 
-See [`PLAN_ZEDIZ.md`](./PLAN_ZEDIZ.md) for architecture and phased roadmap.
+See [`PLAN_DRIFTBASE.md`](./PLAN_DRIFTBASE.md) for architecture and phased roadmap.
 
 ## Repo layout
 
@@ -21,7 +21,7 @@ docker compose up -d
 
 # Backend (workspace)
 cargo check
-cargo run -p zediz-controlplane
+cargo run -p driftbase-controlplane
 
 # Frontend
 cd web

@@ -41,7 +41,7 @@ function Landing() {
       </h1>
 
       <p className="mx-auto mt-5 max-w-md text-[15px] leading-relaxed text-[var(--color-muted)]">
-        Push a Docker image or a Git repo. Zediz picks a node, pulls, routes, and keeps the
+        Push a Docker image or a Git repo. Driftbase picks a node, pulls, routes, and keeps the
         domain up across redeploys.
       </p>
 
@@ -70,13 +70,13 @@ function Landing() {
       </dl>
 
       <a
-        href="https://github.com/lassejlv/zediz"
+        href="https://github.com/lassejlv/driftbase"
         target="_blank"
         rel="noreferrer"
         className="mt-16 inline-flex items-center gap-1.5 text-xs text-[var(--color-muted)] hover:text-[var(--color-fg)]"
       >
         <Github className="h-3.5 w-3.5" />
-        github.com/lassejlv/zediz
+        github.com/lassejlv/driftbase
       </a>
     </section>
   );

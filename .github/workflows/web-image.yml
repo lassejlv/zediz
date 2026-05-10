@@ -30,7 +30,7 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ghcr.io/lassejlv/zediz-web
+          images: ghcr.io/lassejlv/driftbase-web
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=short

@@ -9,7 +9,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
-use zediz_common::Id;
+use driftbase_common::Id;
 
 use crate::auth::AuthUser;
 use crate::error::{ApiError, ApiResult};

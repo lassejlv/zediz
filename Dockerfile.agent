@@ -9,8 +9,8 @@ RUN apt-get update \
 # Copy the workspace source and build just the agent binary.
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates crates
-RUN cargo build --release -p zediz-agent \
- && strip target/release/zediz-agent
+RUN cargo build --release -p driftbase-agent \
+ && strip target/release/driftbase-agent
 
 FROM debian:bookworm-slim
 # Runtime deps: ca-certs, git (for clone), docker CLI + buildx plugin (for
@@ -36,5 +36,5 @@ RUN apt-get update \
 RUN curl -fsSL https://railpack.com/install.sh | bash -s -- -y -b /usr/local/bin \
  && apt-get purge -y --auto-remove gnupg curl \
  && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /build/target/release/zediz-agent /usr/local/bin/zediz-agent
-ENTRYPOINT ["/usr/local/bin/zediz-agent"]
+COPY --from=builder /build/target/release/driftbase-agent /usr/local/bin/driftbase-agent
+ENTRYPOINT ["/usr/local/bin/driftbase-agent"]

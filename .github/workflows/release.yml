@@ -22,15 +22,15 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: Build release binary
-        run: cargo build --release -p zediz-agent --target ${{ matrix.target }}
+        run: cargo build --release -p driftbase-agent --target ${{ matrix.target }}
       - name: Rename artifact
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/zediz-agent dist/zediz-agent-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/driftbase-agent dist/driftbase-agent-${{ matrix.target }}
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/zediz-agent-${{ matrix.target }}
+          files: dist/driftbase-agent-${{ matrix.target }}
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
 

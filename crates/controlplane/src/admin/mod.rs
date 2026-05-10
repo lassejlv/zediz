@@ -1,7 +1,7 @@
 pub mod routes;
 
 use sqlx::PgPool;
-use zediz_common::Id;
+use driftbase_common::Id;
 
 use crate::error::{ApiError, ApiResult};
 

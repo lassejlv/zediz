@@ -2,7 +2,7 @@ use axum::async_trait;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum_extra::extract::cookie::CookieJar;
-use zediz_common::Id;
+use driftbase_common::Id;
 
 use crate::auth::session;
 use crate::error::ApiError;

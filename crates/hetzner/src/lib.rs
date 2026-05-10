@@ -28,7 +28,7 @@ impl HetznerClient {
     pub fn new(token: impl Into<String>) -> Self {
         Self {
             http: Client::builder()
-                .user_agent(concat!("zediz/", env!("CARGO_PKG_VERSION")))
+                .user_agent(concat!("driftbase/", env!("CARGO_PKG_VERSION")))
                 .timeout(Duration::from_secs(30))
                 .build()
                 .expect("reqwest client"),

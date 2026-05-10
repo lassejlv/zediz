@@ -33,7 +33,7 @@ function LoginPage() {
   return (
     <div className="mx-auto max-w-sm pt-10">
       <Card className="p-6">
-        <h1 className="mb-5 text-lg font-semibold tracking-tight">Sign in to Zediz</h1>
+        <h1 className="mb-5 text-lg font-semibold tracking-tight">Sign in to Driftbase</h1>
         <form onSubmit={onSubmit} className="space-y-4">
           <Field label="Email" htmlFor="email">
             <Input

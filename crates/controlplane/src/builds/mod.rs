@@ -3,7 +3,7 @@ pub mod routes;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::PgPool;
-use zediz_common::Id;
+use driftbase_common::Id;
 
 use crate::error::{ApiError, ApiResult};
 

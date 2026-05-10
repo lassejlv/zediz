@@ -1,8 +1,8 @@
-name: Deploy to zediz server
+name: Deploy to driftbase server
 
 # Manual-only: pulls the latest main on the server and bounces docker-compose.
 # Requires these repo secrets:
-#   DEPLOY_SSH_HOST  — host or IP of the zediz server
+#   DEPLOY_SSH_HOST  — host or IP of the driftbase server
 #   DEPLOY_SSH_USER  — SSH user (e.g. root)
 #   DEPLOY_SSH_KEY   — private key (PEM) authorized on the server
 # Optional:
@@ -24,7 +24,7 @@ jobs:
           port: ${{ secrets.DEPLOY_SSH_PORT || 22 }}
           script: |
             set -euo pipefail
-            cd zediz
+            cd driftbase
             git pull
             docker compose down
             docker compose up -d

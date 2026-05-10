@@ -8,13 +8,13 @@ RUN apt-get update \
 
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates crates
-RUN cargo build --release -p zediz-controlplane \
- && strip target/release/zediz-controlplane
+RUN cargo build --release -p driftbase-controlplane \
+ && strip target/release/driftbase-controlplane
 
 FROM debian:bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /build/target/release/zediz-controlplane /usr/local/bin/zediz-controlplane
+COPY --from=builder /build/target/release/driftbase-controlplane /usr/local/bin/driftbase-controlplane
 EXPOSE 8080
-ENTRYPOINT ["/usr/local/bin/zediz-controlplane"]
+ENTRYPOINT ["/usr/local/bin/driftbase-controlplane"]

@@ -5,7 +5,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
-use zediz_common::Id;
+use driftbase_common::Id;
 
 use crate::auth::{extractor::AuthUser, password, session};
 use crate::error::{ApiError, ApiResult};

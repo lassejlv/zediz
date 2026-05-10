@@ -10,7 +10,7 @@ pub struct Config {
     pub database_url: String,
     pub public_url: String,
     pub cookie_secure: bool,
-    /// Public hostname of the bundled registry (e.g. `registry.zediz.dev`),
+    /// Public hostname of the bundled registry (e.g. `registry.driftbase.dev`),
     /// or `None` when the bundled registry is not in use. Used to decide
     /// whether a registry credential's URL points at the bundled registry
     /// (and therefore whether the CP auth proxy should mediate it).
@@ -27,28 +27,28 @@ pub struct LoadedConfig {
 
 impl Config {
     pub fn from_env() -> Result<LoadedConfig> {
-        let bind_addr = std::env::var("ZEDIZ_BIND_ADDR")
+        let bind_addr = std::env::var("DRIFTBASE_BIND_ADDR")
             .unwrap_or_else(|_| "0.0.0.0:8080".into())
             .parse()
-            .context("ZEDIZ_BIND_ADDR")?;
-        let database_url = std::env::var("ZEDIZ_DATABASE_URL")
-            .map_err(|_| anyhow!("ZEDIZ_DATABASE_URL is required"))?;
+            .context("DRIFTBASE_BIND_ADDR")?;
+        let database_url = std::env::var("DRIFTBASE_DATABASE_URL")
+            .map_err(|_| anyhow!("DRIFTBASE_DATABASE_URL is required"))?;
         let public_url =
-            std::env::var("ZEDIZ_PUBLIC_URL").unwrap_or_else(|_| "http://localhost:8080".into());
-        let cookie_secure = std::env::var("ZEDIZ_COOKIE_SECURE")
+            std::env::var("DRIFTBASE_PUBLIC_URL").unwrap_or_else(|_| "http://localhost:8080".into());
+        let cookie_secure = std::env::var("DRIFTBASE_COOKIE_SECURE")
             .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
             .unwrap_or(false);
 
-        let master_key_raw = std::env::var("ZEDIZ_MASTER_KEY")
-            .map_err(|_| anyhow!("ZEDIZ_MASTER_KEY is required (base64 of 32 bytes)"))?;
+        let master_key_raw = std::env::var("DRIFTBASE_MASTER_KEY")
+            .map_err(|_| anyhow!("DRIFTBASE_MASTER_KEY is required (base64 of 32 bytes)"))?;
         let master_key =
-            MasterKey::from_base64(&master_key_raw).context("loading ZEDIZ_MASTER_KEY")?;
+            MasterKey::from_base64(&master_key_raw).context("loading DRIFTBASE_MASTER_KEY")?;
 
-        let registry_site = std::env::var("ZEDIZ_REGISTRY_SITE")
+        let registry_site = std::env::var("DRIFTBASE_REGISTRY_SITE")
             .ok()
             .map(|s| s.trim().to_lowercase())
             .filter(|s| !s.is_empty());
-        let registry_upstream = std::env::var("ZEDIZ_REGISTRY_UPSTREAM")
+        let registry_upstream = std::env::var("DRIFTBASE_REGISTRY_UPSTREAM")
             .unwrap_or_else(|_| "http://registry:5000".into());
 
         Ok(LoadedConfig {

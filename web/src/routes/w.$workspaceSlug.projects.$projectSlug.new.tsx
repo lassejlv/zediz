@@ -228,7 +228,7 @@ function NewServicePage() {
           </Field>
         </Section>
       ) : (
-        <Section title="Git source" description="Zediz builds the image from this repo on deploy.">
+        <Section title="Git source" description="Driftbase builds the image from this repo on deploy.">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-[2fr_1fr]">
             <Field label="Repository URL" htmlFor="svc-git-repo">
               <Input
@@ -297,7 +297,7 @@ function NewServicePage() {
               hint={
                 registryCreds.length === 0
                   ? 'Add a "registry" credential first (in Credentials).'
-                  : 'Where Zediz pushes the built image.'
+                  : 'Where Driftbase pushes the built image.'
               }
             >
               <Select
@@ -336,7 +336,7 @@ function NewServicePage() {
           >
             <Input
               id="svc-registry-repo"
-              placeholder="registry.zediz.dev/team/api"
+              placeholder="registry.driftbase.dev/team/api"
               value={registryRepo}
               onChange={(e) => setRegistryRepo(e.target.value)}
             />
@@ -479,7 +479,7 @@ function SourcePicker({
         onClick={() => onChange('git')}
         icon={<GitBranch className="h-5 w-5" />}
         title="Git repository"
-        body="Zediz clones, builds, and pushes to the workspace registry."
+        body="Driftbase clones, builds, and pushes to the workspace registry."
       />
     </div>
   );

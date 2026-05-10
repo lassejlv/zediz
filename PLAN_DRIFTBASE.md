@@ -1,4 +1,4 @@
-# Zediz — Self-hosted PaaS on Hetzner (Coolify/Railway-like)
+# Driftbase — Self-hosted PaaS on Hetzner (Coolify/Railway-like)
 
 A Rust control plane + Rust node agent that turns a Hetzner API token into an elastic, auto-scaling container platform. Users define services (Docker image or Git repo); the scheduler places them on existing nodes, or provisions new ones on demand, and tears them down when idle.
 
@@ -35,7 +35,7 @@ Core loop: `Service` → `Deployment` (pending) → scheduler picks `Node` (or p
 ## 2. Repo layout (Cargo workspace + frontend)
 
 ```
-zediz/
+driftbase/
 ├── Cargo.toml                       # workspace
 ├── crates/
 │   ├── controlplane/                # axum HTTP API, scheduler, provisioner
@@ -72,7 +72,7 @@ zediz/
 │   │   ├── lib/                     # api client, query hooks, auth
 │   │   └── styles/                  # tailwind.css
 │   └── package.json
-└── PLAN_ZEDIZ.md
+└── PLAN_DRIFTBASE.md
 ```
 
 Backend-only install uses Cargo; frontend uses Bun per global rules. `bun install`, `bun run dev`, etc.
@@ -106,7 +106,7 @@ Indexes on FKs, `(workspace_id, created_at desc)`, `sessions.token_hash`, `invit
 
 ## 4. Authentication & multi-tenancy
 
-- **Session auth** via httpOnly `__Host-zediz_session` cookie, sliding 30-day expiry; store `token_hash` (SHA-256) not raw token.
+- **Session auth** via httpOnly `__Host-driftbase_session` cookie, sliding 30-day expiry; store `token_hash` (SHA-256) not raw token.
 - **Password**: argon2id with id+salt per user. Email/password only at v1; OAuth later.
 - **Workspaces**: every request scoped via `X-Workspace-Slug` header or `/w/:slug/...` URL segment. Middleware resolves `(user, workspace)` → `WorkspaceMember` and attaches role.
 - **RBAC roles**:
@@ -116,7 +116,7 @@ Indexes on FKs, `(workspace_id, created_at desc)`, `sessions.token_hash`, `invit
   - `viewer`: read-only
 - **Invites**: owner/admin generates a signed token link (`/invite/:token`). Unauth users sign up via invite; auth users with matching email auto-accept.
 - **CSRF**: `SameSite=Lax` + double-submit token for state-changing requests from browser origin.
-- **Credential storage**: AES-256-GCM with a master key from `ZEDIZ_MASTER_KEY` env; encrypt-at-rest in DB; decrypt only in memory during use.
+- **Credential storage**: AES-256-GCM with a master key from `DRIFTBASE_MASTER_KEY` env; encrypt-at-rest in DB; decrypt only in memory during use.
 
 ---
 
@@ -137,9 +137,9 @@ Own typed client in `crates/hetzner` (reqwest + serde). Scope to the endpoints w
    - Selected SSH key (from workspace `ssh_keys`, uploaded to Hetzner if not present).
    - `user_data` cloud-init that:
      - Installs Docker (`curl -fsSL get.docker.com | sh`)
-     - Pulls `zediz-agent` from our public release URL
+     - Pulls `driftbase-agent` from our public release URL
      - Drops a systemd unit with `CONTROL_PLANE_URL`, `NODE_BOOTSTRAP_TOKEN` (one-shot, signed JWT), `WORKSPACE_ID` baked in
-     - Starts `zediz-agent.service`
+     - Starts `driftbase-agent.service`
 3. Mark node `provisioning` in DB; wait for agent to call `POST /agent/register` with the bootstrap token.
 4. On registration, upgrade to `ready` and start accepting deployments.
 5. All nodes placed inside a per-workspace private Hetzner network; public IP only needed for ingress nodes (later: dedicated ingress node pool).
@@ -190,7 +190,7 @@ Placement is online bin-packing by resource vector `(cpu_millis, memory_mb, disk
 - On `deploy` for a git service:
   1. Create `build` row, status `queued`.
   2. Scheduler picks a builder node; sends `Build` command with repo URL + commit + Dockerfile path (or auto-detect via Nixpacks-style heuristics later).
-  3. Agent runs `git clone --depth 1`, `docker buildx build --push -t registry.zediz.internal/<workspace>/<service>:<sha>`.
+  3. Agent runs `git clone --depth 1`, `docker buildx build --push -t registry.driftbase.internal/<workspace>/<service>:<sha>`.
   4. Streams logs back; on success stores image digest → new `service_version`.
   5. Triggers standard deploy flow with that version.
 
@@ -203,7 +203,7 @@ v1 accepts `Dockerfile` only. Nixpacks/Buildpacks are a v2 feature behind a `bui
 v1: self-host `distribution/distribution` (CNCF registry) on a dedicated small node, backed by **Hetzner Object Storage** (S3-compatible) so we don't lose images when nodes die.
 
 - Auth: registry uses token auth; control plane is the token issuer (JWT signed with registry's public key).
-- Image naming: `registry.zediz.<tld>/<workspace_slug>/<service_slug>:<commit_or_tag>`.
+- Image naming: `registry.driftbase.<tld>/<workspace_slug>/<service_slug>:<commit_or_tag>`.
 - Garbage collection: weekly job deletes untagged blobs older than 14 days.
 
 v2 option: allow BYO registry (ghcr.io, Docker Hub) via stored registry credentials.
@@ -213,7 +213,7 @@ v2 option: allow BYO registry (ghcr.io, Docker Hub) via stored registry credenti
 ## 10. Networking & ingress
 
 - Each node gets Caddy running in a container, managed via Caddy Admin API by the agent.
-- Service exposes ports; control plane assigns each deployment a stable hostname `<service>-<project>-<workspace>.zediz.app` (wildcard DNS → ingress node).
+- Service exposes ports; control plane assigns each deployment a stable hostname `<service>-<project>-<workspace>.driftbase.app` (wildcard DNS → ingress node).
 - **Ingress** v1: a designated node per workspace holds the wildcard cert (Let's Encrypt via Caddy) and proxies to backend container IPs inside the private Hetzner network.
 - v2: multiple ingress nodes behind Hetzner LB.
 
@@ -413,6 +413,6 @@ w/$workspaceSlug/
 1. **Agent transport**: WebSocket+JSON (simple) vs gRPC (structured). Recommend WS+JSON for v1; switch to gRPC only if perf/shape issues appear.
 2. **Primary key type**: ULID (sortable, human-ish) vs UUIDv7. Recommend ULID stored as `TEXT`.
 3. **Builder placement**: dedicated builder pool vs build-on-first-target-node. Dedicated is cleaner and lets us reuse layer cache.
-4. **DNS**: do we own `zediz.app` and run wildcard for users, or require BYO domain? Wildcard on our domain for v1, BYO in v2.
+4. **DNS**: do we own `driftbase.app` and run wildcard for users, or require BYO domain? Wildcard on our domain for v1, BYO in v2.
 5. **Billing/cost caps**: hard stop at cap vs. warn only? Recommend hard stop to avoid runaway Hetzner bills.
 6. **Single-region v1**? Recommend yes — user picks one Hetzner location per workspace; multi-region is v2.

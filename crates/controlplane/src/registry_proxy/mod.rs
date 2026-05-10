@@ -245,7 +245,7 @@ fn unauthorized() -> Response {
     let mut r = (StatusCode::UNAUTHORIZED, "unauthorized\n").into_response();
     r.headers_mut().insert(
         header::WWW_AUTHENTICATE,
-        HeaderValue::from_static(r#"Basic realm="zediz-registry""#),
+        HeaderValue::from_static(r#"Basic realm="driftbase-registry""#),
     );
     r
 }

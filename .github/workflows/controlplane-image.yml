@@ -31,7 +31,7 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ghcr.io/lassejlv/zediz-controlplane
+          images: ghcr.io/lassejlv/driftbase-controlplane
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=short

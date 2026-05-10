@@ -16,7 +16,7 @@ export function ThemeToggle() {
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
     try {
-      localStorage.setItem('zediz-theme', theme);
+      localStorage.setItem('driftbase-theme', theme);
     } catch {
       /* ignore */
     }

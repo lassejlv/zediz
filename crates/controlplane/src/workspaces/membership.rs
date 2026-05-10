@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use zediz_common::Id;
+use driftbase_common::Id;
 
 use crate::error::{ApiError, ApiResult};
 

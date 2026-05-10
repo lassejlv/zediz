@@ -44,7 +44,7 @@ pub async fn run_build(
     node_token: &str,
     spec: BuildSpec,
 ) -> Result<()> {
-    let work = PathBuf::from(format!("/tmp/zediz-build-{}", spec.build_id));
+    let work = PathBuf::from(format!("/tmp/driftbase-build-{}", spec.build_id));
     // Idempotent cleanup: previous failed attempts may have left debris.
     let _ = tokio::fs::remove_dir_all(&work).await;
     tokio::fs::create_dir_all(&work).await?;
@@ -106,7 +106,7 @@ async fn do_build(
         .arg("credential.helper=")
         .arg("-c")
         .arg(
-            r#"credential.helper=!f() { echo username=x-access-token; echo "password=$ZEDIZ_GIT_TOKEN"; }; f"#,
+            r#"credential.helper=!f() { echo username=x-access-token; echo "password=$DRIFTBASE_GIT_TOKEN"; }; f"#,
         )
         .args([
             "clone",
@@ -125,7 +125,7 @@ async fn do_build(
         if spec.git_repo.starts_with("http://") {
             bail!("refusing to send PAT over plain http://");
         }
-        clone.env("ZEDIZ_GIT_TOKEN", pat);
+        clone.env("DRIFTBASE_GIT_TOKEN", pat);
     }
     run_logged(
         client,
@@ -167,7 +167,7 @@ async fn do_build(
 
     // Idempotent buildx context setup. buildx ships with modern docker.
     let _ = Command::new("docker")
-        .args(["buildx", "create", "--use", "--name", "zediz-builder"])
+        .args(["buildx", "create", "--use", "--name", "driftbase-builder"])
         .output()
         .await;
 

@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use sqlx::PgPool;
-use zediz_common::Id;
+use driftbase_common::Id;
 
 /// Kinds of commands enqueued for an agent to execute.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -126,7 +126,7 @@ pub struct VolumeMount<'a> {
     /// container.
     pub device_path: &'a str,
     /// Deterministic path on the node where the block device gets
-    /// mounted. Conventionally `/var/lib/zediz/volumes/<volume_id>`.
+    /// mounted. Conventionally `/var/lib/driftbase/volumes/<volume_id>`.
     pub host_path: &'a str,
     /// Where the container sees the volume.
     pub container_path: &'a str,

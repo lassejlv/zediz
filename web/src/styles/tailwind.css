@@ -61,13 +61,13 @@
   }
 }
 
-@keyframes zediz-pulse {
+@keyframes driftbase-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
 
 @layer utilities {
   .animate-status-pulse {
-    animation: zediz-pulse 1.6s ease-in-out infinite;
+    animation: driftbase-pulse 1.6s ease-in-out infinite;
   }
 }

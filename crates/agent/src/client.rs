@@ -15,7 +15,7 @@ impl ControlPlaneClient {
     pub fn new(base: &str) -> Self {
         Self {
             http: Client::builder()
-                .user_agent(concat!("zediz-agent/", env!("CARGO_PKG_VERSION")))
+                .user_agent(concat!("driftbase-agent/", env!("CARGO_PKG_VERSION")))
                 .timeout(Duration::from_secs(30))
                 .build()
                 .expect("reqwest client"),

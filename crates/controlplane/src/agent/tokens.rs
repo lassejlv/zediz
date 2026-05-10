@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 
 use crate::crypto::MasterKey;
 
-const BOOTSTRAP_CONTEXT: &[u8] = b"zediz/node-bootstrap/v1";
-const NODE_CONTEXT: &[u8] = b"zediz/node-token/v1";
+const BOOTSTRAP_CONTEXT: &[u8] = b"driftbase/node-bootstrap/v1";
+const NODE_CONTEXT: &[u8] = b"driftbase/node-token/v1";
 const DEFAULT_BOOTSTRAP_TTL_MIN: i64 = 60;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

@@ -5,7 +5,7 @@ use axum::{routing::get, Json, Router};
 use serde::Serialize;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
-use zediz_common::telemetry;
+use driftbase_common::telemetry;
 
 mod admin;
 mod agent;
@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
         Err(e) if e.not_found() => {}
         Err(e) => eprintln!("warning: could not load .env: {e}"),
     }
-    telemetry::init("zediz-controlplane");
+    telemetry::init("driftbase-controlplane");
     let loaded = Config::from_env().context("loading config")?;
     let config = loaded.config;
     let master_key = loaded.master_key;

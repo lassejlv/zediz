@@ -12,7 +12,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/lassejlv/zediz"
+repository = "https://github.com/lassejlv/driftbase"
 rust-version = "1.94"
 
 [workspace.dependencies]
@@ -68,9 +68,9 @@ dotenvy = "0.15"
 bollard = "0.17"
 
 # Internal
-zediz-common = { path = "crates/common" }
-zediz-proto = { path = "crates/proto" }
-zediz-hetzner = { path = "crates/hetzner" }
+driftbase-common = { path = "crates/common" }
+driftbase-proto = { path = "crates/proto" }
+driftbase-hetzner = { path = "crates/hetzner" }
 
 [profile.release]
 lto = "thin"

@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "zediz-web",
+      "name": "driftbase-web",
       "dependencies": {
         "@radix-ui/react-dialog": "^1.1.15",
         "@tanstack/react-query": "^5.62.0",

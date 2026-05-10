@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::time::Duration;
-use zediz_common::telemetry;
+use driftbase_common::telemetry;
 
 mod build;
 mod caddy;
@@ -13,22 +13,22 @@ use crate::client::ControlPlaneClient;
 use crate::docker::DockerExec;
 
 #[derive(Parser, Debug)]
-#[command(name = "zediz-agent", version, about = "Zediz node agent")]
+#[command(name = "driftbase-agent", version, about = "Driftbase node agent")]
 struct Args {
-    /// URL of the control plane (e.g. https://cp.zediz.example).
-    #[arg(long, env = "ZEDIZ_CONTROL_PLANE_URL")]
+    /// URL of the control plane (e.g. https://cp.driftbase.example).
+    #[arg(long, env = "DRIFTBASE_CONTROL_PLANE_URL")]
     control_plane_url: String,
 
     /// One-shot bootstrap token issued by the control plane at provision time.
-    #[arg(long, env = "ZEDIZ_BOOTSTRAP_TOKEN")]
+    #[arg(long, env = "DRIFTBASE_BOOTSTRAP_TOKEN")]
     bootstrap_token: Option<String>,
 
     /// Persistent node token (skips registration if supplied).
-    #[arg(long, env = "ZEDIZ_NODE_TOKEN")]
+    #[arg(long, env = "DRIFTBASE_NODE_TOKEN")]
     node_token: Option<String>,
 
     /// Override reported hostname (defaults to OS hostname).
-    #[arg(long, env = "ZEDIZ_NODE_HOSTNAME")]
+    #[arg(long, env = "DRIFTBASE_NODE_HOSTNAME")]
     hostname: Option<String>,
 }
 
@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
         Err(e) if e.not_found() => {}
         Err(e) => eprintln!("warning: could not load .env: {e}"),
     }
-    telemetry::init("zediz-agent");
+    telemetry::init("driftbase-agent");
     let args = Args::parse();
 
     let client = ControlPlaneClient::new(&args.control_plane_url);
@@ -53,11 +53,11 @@ async fn main() -> Result<()> {
         let bootstrap = args
             .bootstrap_token
             .clone()
-            .context("ZEDIZ_BOOTSTRAP_TOKEN or ZEDIZ_NODE_TOKEN is required")?;
+            .context("DRIFTBASE_BOOTSTRAP_TOKEN or DRIFTBASE_NODE_TOKEN is required")?;
         let host = args
             .hostname
             .clone()
-            .unwrap_or_else(|| hostname().unwrap_or_else(|| "zediz-node".into()));
+            .unwrap_or_else(|| hostname().unwrap_or_else(|| "driftbase-node".into()));
         let specs = host_resources();
         let resp = client
             .register(&bootstrap, &host, specs.0, specs.1, specs.2)

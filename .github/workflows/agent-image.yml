@@ -31,7 +31,7 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ghcr.io/lassejlv/zediz-agent
+          images: ghcr.io/lassejlv/driftbase-agent
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=short

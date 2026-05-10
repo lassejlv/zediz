@@ -280,7 +280,7 @@ impl Executor {
                 .to_string();
 
             // Make sure the target container is attached to the shared
-            // `zediz` network so Caddy can dial it by name.
+            // `driftbase` network so Caddy can dial it by name.
             crate::caddy::ensure_container_on_network(&docker, &container_name).await?;
 
             routes.push(crate::caddy::Route {

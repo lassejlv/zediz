@@ -21,7 +21,7 @@ function RootComponent() {
       <header className="sticky top-0 z-10 flex items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-bg)]/85 px-6 py-3 backdrop-blur">
         <Link to="/" className="flex items-center gap-2">
           <span className="inline-block h-2 w-2 rounded-full bg-[var(--color-accent)]" />
-          <span className="font-mono text-sm tracking-tight">zediz</span>
+          <span className="font-mono text-sm tracking-tight">driftbase</span>
         </Link>
         <div className="flex items-center gap-3">
           {me.data ? (

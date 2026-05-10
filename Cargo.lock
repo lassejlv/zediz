@@ -641,6 +641,107 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
+name = "driftbase-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bollard",
+ "chrono",
+ "clap",
+ "dotenvy",
+ "driftbase-common",
+ "driftbase-proto",
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "driftbase-common"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "chrono",
+ "rand 0.8.5",
+ "serde",
+ "sha2",
+ "thiserror 1.0.69",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
+]
+
+[[package]]
+name = "driftbase-controlplane"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "argon2",
+ "async-trait",
+ "axum",
+ "axum-extra",
+ "base64",
+ "bytes",
+ "chrono",
+ "clap",
+ "dotenvy",
+ "driftbase-common",
+ "driftbase-hetzner",
+ "driftbase-proto",
+ "futures",
+ "headers",
+ "hmac",
+ "http",
+ "hyper",
+ "jsonwebtoken",
+ "once_cell",
+ "rand 0.8.5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "thiserror 1.0.69",
+ "time",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
+ "uuid",
+]
+
+[[package]]
+name = "driftbase-hetzner"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "driftbase-proto"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "driftbase-common",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3646,107 +3747,6 @@ dependencies = [
  "quote",
  "syn",
  "synstructure",
-]
-
-[[package]]
-name = "zediz-agent"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bollard",
- "chrono",
- "clap",
- "dotenvy",
- "futures",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "zediz-common",
- "zediz-proto",
-]
-
-[[package]]
-name = "zediz-common"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "chrono",
- "rand 0.8.5",
- "serde",
- "sha2",
- "thiserror 1.0.69",
- "tracing",
- "tracing-subscriber",
- "ulid",
-]
-
-[[package]]
-name = "zediz-controlplane"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "argon2",
- "async-trait",
- "axum",
- "axum-extra",
- "base64",
- "bytes",
- "chrono",
- "clap",
- "dotenvy",
- "futures",
- "headers",
- "hmac",
- "http",
- "hyper",
- "jsonwebtoken",
- "once_cell",
- "rand 0.8.5",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "thiserror 1.0.69",
- "time",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "ulid",
- "uuid",
- "zediz-common",
- "zediz-hetzner",
- "zediz-proto",
-]
-
-[[package]]
-name = "zediz-hetzner"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "zediz-proto"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "zediz-common",
 ]
 
 [[package]]

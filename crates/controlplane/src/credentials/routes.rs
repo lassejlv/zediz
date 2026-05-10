@@ -4,8 +4,8 @@ use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use zediz_common::Id;
-use zediz_hetzner::HetznerClient;
+use driftbase_common::Id;
+use driftbase_hetzner::HetznerClient;
 
 use crate::auth::AuthUser;
 use crate::error::{ApiError, ApiResult};
@@ -256,7 +256,7 @@ async fn rotate(
 }
 
 /// True if `url` refers to the bundled registry — matches on hostname only
-/// so `https://registry.zediz.dev/ws/svc` and the bare `registry.zediz.dev`
+/// so `https://registry.driftbase.dev/ws/svc` and the bare `registry.driftbase.dev`
 /// both count.
 fn registry_host_matches(url: &str, bundled_host: &str) -> bool {
     let host = url
