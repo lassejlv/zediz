@@ -7,10 +7,15 @@ import type {
   Resources,
   RestartPolicy,
   ServiceSummary,
+  VariableReferencesResponse,
 } from './types';
 
+function projectBase(workspaceSlug: string, projectSlug: string) {
+  return `/workspaces/${encodeURIComponent(workspaceSlug)}/projects/${encodeURIComponent(projectSlug)}`;
+}
+
 function serviceBase(workspaceSlug: string, projectSlug: string) {
-  return `/workspaces/${encodeURIComponent(workspaceSlug)}/projects/${encodeURIComponent(projectSlug)}/services`;
+  return `${projectBase(workspaceSlug, projectSlug)}/services`;
 }
 
 export function servicesQuery(workspaceSlug: string, projectSlug: string) {
@@ -23,6 +28,27 @@ export function servicesQuery(workspaceSlug: string, projectSlug: string) {
 
 export function useServices(workspaceSlug: string, projectSlug: string) {
   return useQuery(servicesQuery(workspaceSlug, projectSlug));
+}
+
+export function variableReferencesQuery(workspaceSlug: string, projectSlug: string) {
+  return queryOptions({
+    queryKey: [
+      'workspace',
+      workspaceSlug,
+      'project',
+      projectSlug,
+      'variable-references',
+    ] as const,
+    queryFn: ({ signal }) =>
+      api<VariableReferencesResponse>(
+        `${projectBase(workspaceSlug, projectSlug)}/variable-references`,
+        { signal },
+      ),
+  });
+}
+
+export function useVariableReferences(workspaceSlug: string, projectSlug: string) {
+  return useQuery(variableReferencesQuery(workspaceSlug, projectSlug));
 }
 
 export function serviceQuery(

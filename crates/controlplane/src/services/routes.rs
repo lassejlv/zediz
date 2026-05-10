@@ -22,6 +22,10 @@ pub fn router() -> Router<AppState> {
             get(list).post(create),
         )
         .route(
+            "/workspaces/:slug/projects/:project_slug/variable-references",
+            get(variable_references),
+        )
+        .route(
             "/workspaces/:slug/projects/:project_slug/services/:service_slug",
             get(show).patch(update).delete(delete),
         )
@@ -171,6 +175,18 @@ async fn list(
     rows.into_iter()
         .map(ServiceSummary::try_from)
         .collect::<Result<Vec<_>, _>>()
+        .map(Json)
+}
+
+async fn variable_references(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((slug, project_slug)): Path<(String, String)>,
+) -> ApiResult<Json<crate::services::references::VariableReferencesResponse>> {
+    let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
+    let project_id = resolve_project(state.pool(), &ctx.workspace_id, &project_slug).await?;
+    crate::services::references::variable_references(state.pool(), &project_id.to_string())
+        .await
         .map(Json)
 }
 
@@ -595,8 +611,14 @@ async fn deploy(
                 .image_ref
                 .clone()
                 .ok_or_else(|| ApiError::Validation("service has no image_ref".into()))?;
-            deployments::create_deployment(state.pool(), &summary, &image, &ctx.workspace_id)
-                .await?
+            deployments::create_deployment(
+                state.pool(),
+                &summary,
+                &project_id,
+                &image,
+                &ctx.workspace_id,
+            )
+            .await?
         }
         "git" => {
             if summary.git_repo.is_none() {
@@ -611,6 +633,7 @@ async fn deploy(
             let d = deployments::create_deployment(
                 state.pool(),
                 &summary,
+                &project_id,
                 "pending-build",
                 &ctx.workspace_id,
             )

@@ -73,6 +73,14 @@ export const TEMPLATES: Template[] = [
         description: "Database created on first boot.",
       },
       {
+        key: "DATABASE_URL",
+        defaultValue:
+          "postgresql://${{POSTGRES_USER}}:${{POSTGRES_PASSWORD}}@${{DRIFTBASE_PRIVATE_HOSTNAME}}:5432/${{POSTGRES_DB}}",
+        readonly: true,
+        description:
+          "Private-network connection string for other services to reference.",
+      },
+      {
         key: "PGDATA",
         defaultValue: "/var/lib/postgresql/data/pgdata",
         readonly: true,

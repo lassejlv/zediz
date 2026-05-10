@@ -81,10 +81,19 @@ impl TryFrom<DeploymentRow> for DeploymentSummary {
 pub async fn create_deployment(
     pool: &DatabaseConnection,
     service: &ServiceSummary,
+    project_id: &Id,
     image: &str,
     _workspace_id: &Id,
 ) -> ApiResult<DeploymentSummary> {
     let id = Id::new();
+    let env_vars = crate::services::references::resolve_for_deployment(
+        pool,
+        &project_id.to_string(),
+        &service.id.to_string(),
+        &service.slug,
+        &service.env_vars,
+    )
+    .await?;
     let row: DeploymentRow = crate::db::query_as(
         "INSERT INTO deployments (id, service_id, status, image_ref, env_vars, ports, resources) \
          VALUES ($1, $2, 'pending', $3, $4, $5, $6) \
@@ -94,7 +103,7 @@ pub async fn create_deployment(
     .bind(id.to_string())
     .bind(service.id.to_string())
     .bind(image)
-    .bind(json!(service.env_vars))
+    .bind(json!(env_vars))
     .bind(json!(service.ports))
     .bind(json!(service.resources))
     .fetch_one(pool)

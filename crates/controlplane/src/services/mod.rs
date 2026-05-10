@@ -1,3 +1,4 @@
+pub mod references;
 pub mod routes;
 
 use std::collections::BTreeMap;

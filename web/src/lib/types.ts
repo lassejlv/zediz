@@ -88,6 +88,24 @@ export interface PortMap {
 
 export type EnvVars = Record<string, string>;
 
+export type VariableReferenceKind = 'env' | 'generated';
+
+export interface VariableReference {
+  key: string;
+  kind: VariableReferenceKind;
+  expression: string;
+}
+
+export interface VariableReferenceService {
+  slug: string;
+  name: string;
+  variables: VariableReference[];
+}
+
+export interface VariableReferencesResponse {
+  services: VariableReferenceService[];
+}
+
 export type RestartPolicy = 'no' | 'on-failure' | 'always';
 
 export type ServiceSource = 'image' | 'git';

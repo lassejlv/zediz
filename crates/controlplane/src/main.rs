@@ -63,8 +63,7 @@ async fn main() -> Result<()> {
     let loaded = Config::from_env().context("loading config")?;
     let config = loaded.config;
     let master_key = loaded.master_key;
-    let pool = db::connect(&config.database_url).await?;
-    db::migrate(&pool).await?;
+    let pool = connect_and_migrate(&config).await?;
 
     let bind: SocketAddr = config.bind_addr;
     let state = AppState::new(pool, config, master_key);
@@ -77,6 +76,29 @@ async fn main() -> Result<()> {
     tracing::info!(addr = %bind, "control plane listening");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn connect_and_migrate(config: &Config) -> Result<db::Db> {
+    match config.database_pooled_url.as_deref() {
+        Some(runtime_url) if runtime_url != config.database_url => {
+            let migration_pool = db::connect(&config.database_url)
+                .await
+                .context("connecting migration database")?;
+            db::migrate(&migration_pool).await?;
+            drop(migration_pool);
+
+            db::connect(runtime_url)
+                .await
+                .context("connecting pooled runtime database")
+        }
+        _ => {
+            let pool = db::connect(&config.database_url)
+                .await
+                .context("connecting database")?;
+            db::migrate(&pool).await?;
+            Ok(pool)
+        }
+    }
 }
 
 fn router(state: AppState) -> Router {

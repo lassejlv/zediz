@@ -4,10 +4,15 @@ import { useMemo, useState, type FormEvent } from 'react';
 import { ArrowLeft, Container, GitBranch, Plus, Trash2 } from 'lucide-react';
 import { meQuery } from '@/lib/auth';
 import { projectQuery } from '@/lib/projects';
-import { useCreateService, type CreateServiceInput } from '@/lib/services';
+import {
+  useCreateService,
+  useVariableReferences,
+  type CreateServiceInput,
+} from '@/lib/services';
 import { useCredentials } from '@/lib/credentials';
 import { canWrite, workspaceQuery } from '@/lib/workspaces';
 import { ApiError } from '@/lib/api';
+import { EnvReferenceInput } from '@/components/env-reference-input';
 import {
   Button,
   Card,
@@ -17,7 +22,12 @@ import {
   Select,
   Stack,
 } from '@/components/ui';
-import type { CredentialSummary, PortMap, RestartPolicy } from '@/lib/types';
+import type {
+  CredentialSummary,
+  PortMap,
+  RestartPolicy,
+  VariableReferencesResponse,
+} from '@/lib/types';
 
 export const Route = createFileRoute('/w/$workspaceSlug/projects/$projectSlug/new')({
   beforeLoad: async ({ context }) => {
@@ -45,6 +55,7 @@ function NewServicePage() {
   const workspace = useQuery(workspaceQuery(workspaceSlug));
   const project = useQuery(projectQuery(workspaceSlug, projectSlug));
   const credentials = useCredentials(workspaceSlug);
+  const variableReferences = useVariableReferences(workspaceSlug, projectSlug);
   const create = useCreateService(workspaceSlug, projectSlug);
   const navigate = useNavigate();
 
@@ -355,7 +366,11 @@ function NewServicePage() {
         title="Environment variables"
         description="Injected into the container at launch."
       >
-        <EnvEditor rows={envRows} onChange={setEnvRows} />
+        <EnvEditor
+          rows={envRows}
+          onChange={setEnvRows}
+          references={variableReferences.data}
+        />
       </Section>
 
       <Section title="Resources" description="Reserved on the node that runs this service.">
@@ -611,9 +626,11 @@ function PortsEditor({
 function EnvEditor({
   rows,
   onChange,
+  references,
 }: {
   rows: EnvRow[];
   onChange: (rows: EnvRow[]) => void;
+  references?: VariableReferencesResponse;
 }) {
   function update(i: number, patch: Partial<EnvRow>) {
     onChange(rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
@@ -646,10 +663,11 @@ function EnvEditor({
             onChange={(e) => update(i, { key: e.target.value })}
             className="font-mono text-xs"
           />
-          <Input
+          <EnvReferenceInput
             placeholder="value"
             value={r.value}
-            onChange={(e) => update(i, { value: e.target.value })}
+            onChange={(value) => update(i, { value })}
+            references={references}
             className="font-mono text-xs"
           />
           <button

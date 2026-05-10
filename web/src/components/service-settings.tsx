@@ -6,8 +6,13 @@ import {
   type ReactNode,
 } from 'react';
 import { Check, Eye, EyeOff, Plus, Trash2 } from 'lucide-react';
-import { useUpdateService, type UpdateServiceInput } from '@/lib/services';
+import {
+  useUpdateService,
+  useVariableReferences,
+  type UpdateServiceInput,
+} from '@/lib/services';
 import { ApiError } from '@/lib/api';
+import { EnvReferenceInput } from '@/components/env-reference-input';
 import {
   Button,
   Card,
@@ -23,6 +28,7 @@ import type {
   RestartPolicy,
   ServiceBuilder,
   ServiceSummary,
+  VariableReferencesResponse,
 } from '@/lib/types';
 
 interface Props {
@@ -292,6 +298,7 @@ function EnvVarsSection({
     projectSlug,
     service.slug,
   );
+  const variableReferences = useVariableReferences(workspaceSlug, projectSlug);
   const [rows, setRows] = useState<EnvRow[]>(() => envMapToRows(service.env_vars));
   const initialRef = useRef(service.env_vars);
 
@@ -338,6 +345,8 @@ function EnvVarsSection({
                 disabled={!canManage}
                 duplicate={!!row.key && dupKey === row.key}
                 invalid={!!row.key && !isValidKey(row.key)}
+                references={variableReferences.data}
+                currentEnv={currentMap}
                 onChange={(patch) =>
                   setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)))
                 }
@@ -387,6 +396,8 @@ function EnvRowEditor({
   disabled,
   duplicate,
   invalid,
+  references,
+  currentEnv,
   onChange,
   onRemove,
 }: {
@@ -394,6 +405,8 @@ function EnvRowEditor({
   disabled: boolean;
   duplicate: boolean;
   invalid: boolean;
+  references?: VariableReferencesResponse;
+  currentEnv: EnvVars;
   onChange: (patch: Partial<EnvRow>) => void;
   onRemove: () => void;
 }) {
@@ -414,16 +427,18 @@ function EnvRowEditor({
             : 'border-[var(--color-border)] focus:border-[var(--color-accent)]',
         ].join(' ')}
       />
-      <input
+      <EnvReferenceInput
         aria-label="Value"
         placeholder="value"
         type={row.reveal ? 'text' : 'password'}
         value={row.value}
         disabled={disabled}
-        onChange={(e) => onChange({ value: e.target.value })}
+        onChange={(value) => onChange({ value })}
+        references={references}
+        currentEnv={currentEnv}
+        includeCurrentServiceShorthand
         className={[
-          'h-9 rounded-md border border-[var(--color-border)] bg-transparent px-3 font-mono text-xs',
-          'placeholder:text-[var(--color-muted)] focus:border-[var(--color-accent)] focus:outline-none',
+          'font-mono text-xs',
         ].join(' ')}
       />
       <button
