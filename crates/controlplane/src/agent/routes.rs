@@ -271,18 +271,32 @@ async fn heartbeat(
     }
 
     for ack in req.acks {
-        let kind: Option<(String,)> =
-            crate::db::query_tuple("SELECT kind FROM agent_commands WHERE id = $1")
-                .bind(&ack.command_id)
-                .fetch_optional(state.pool())
-                .await?;
-        commands::mark_acked(
+        let kind: Option<(String,)> = crate::db::query_tuple(
+            "SELECT kind FROM agent_commands WHERE id = $1 AND node_id = $2",
+        )
+        .bind(&ack.command_id)
+        .bind(&claims.node_id)
+        .fetch_optional(state.pool())
+        .await?;
+        if kind.is_none() {
+            tracing::warn!(
+                node = %claims.node_id,
+                command = %ack.command_id,
+                "ignoring ack for command not owned by node",
+            );
+            continue;
+        }
+        let acked = commands::mark_acked(
             state.pool(),
+            &claims.node_id,
             &ack.command_id,
             ack.ok,
             ack.message.as_deref(),
         )
         .await?;
+        if !acked {
+            continue;
+        }
         if kind.as_ref().map(|(kind,)| kind.as_str()) == Some("sync_private_network") {
             if ack.ok {
                 crate::db::query(
@@ -410,7 +424,8 @@ async fn heartbeat(
         .await?;
     }
 
-    let pending = commands::claim_for_node(state.pool(), &claims.node_id, 16).await?;
+    let pending =
+        commands::claim_for_node(state.pool(), state.master_key(), &claims.node_id, 16).await?;
     Ok(Json(HeartbeatResponse { commands: pending }))
 }
 
@@ -438,13 +453,16 @@ async fn deployment_status(
 
     let row: Option<(String, String)> = crate::db::query_tuple(
         "SELECT d.service_id, d.status FROM deployments d \
-         JOIN services s ON s.id = d.service_id \
-         JOIN projects p ON p.id = s.project_id \
-         WHERE d.id = $1 AND (d.node_id = $2 OR p.workspace_id = $3)",
+         WHERE d.id = $1 AND ( \
+             d.node_id = $2 OR \
+             EXISTS ( \
+                 SELECT 1 FROM node_allocations a \
+                 WHERE a.deployment_id = d.id AND a.node_id = $2 \
+             ) \
+         )",
     )
     .bind(&deployment_id)
     .bind(&claims.node_id)
-    .bind(&claims.workspace_id)
     .fetch_optional(state.pool())
     .await?;
     let (service_id, previous_status) = row.ok_or(ApiError::NotFound)?;
@@ -462,7 +480,7 @@ async fn deployment_status(
         None
     };
 
-    crate::db::query(
+    let res = crate::db::query(
         "UPDATE deployments SET \
             status = $1, \
             container_id = COALESCE($2, container_id), \
@@ -471,7 +489,13 @@ async fn deployment_status(
             stopped_at = COALESCE($5, stopped_at), \
             node_id = COALESCE(node_id, $6), \
             updated_at = now() \
-         WHERE id = $7",
+         WHERE id = $7 AND ( \
+             node_id = $6 OR \
+             EXISTS ( \
+                 SELECT 1 FROM node_allocations a \
+                 WHERE a.deployment_id = deployments.id AND a.node_id = $6 \
+             ) \
+         )",
     )
     .bind(&update.status)
     .bind(update.container_id.as_deref())
@@ -482,11 +506,15 @@ async fn deployment_status(
     .bind(&deployment_id)
     .execute(state.pool())
     .await?;
+    if res.rows_affected() == 0 {
+        return Err(ApiError::NotFound);
+    }
 
     if matches!(update.status.as_str(), "stopped" | "errored") {
         crate::private_network::release_deployment_ip(state.pool(), &deployment_id).await?;
-        crate::db::query("DELETE FROM node_allocations WHERE deployment_id = $1")
+        crate::db::query("DELETE FROM node_allocations WHERE deployment_id = $1 AND node_id = $2")
             .bind(&deployment_id)
+            .bind(&claims.node_id)
             .execute(state.pool())
             .await?;
     }

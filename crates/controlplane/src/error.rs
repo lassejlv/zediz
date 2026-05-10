@@ -17,6 +17,8 @@ pub enum ApiError {
     Conflict(String),
     #[error("validation: {0}")]
     Validation(String),
+    #[error("too many requests")]
+    RateLimited,
     #[error("internal: {0}")]
     Internal(#[from] anyhow::Error),
     #[error(transparent)]
@@ -42,6 +44,7 @@ impl ApiError {
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             ApiError::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
             ApiError::Validation(_) => (StatusCode::UNPROCESSABLE_ENTITY, "validation"),
+            ApiError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
             ApiError::Db(err) if crate::db::is_not_found(err) => {
                 (StatusCode::NOT_FOUND, "not_found")

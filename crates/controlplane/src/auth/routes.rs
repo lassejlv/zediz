@@ -4,12 +4,21 @@ use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{DateTime, Utc};
 use driftbase_common::Id;
+use sea_orm::TransactionTrait;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::auth::{extractor::AuthUser, password, session};
 use crate::error::{ApiError, ApiResult};
+use crate::rate_limit::RateLimitOutcome;
 use crate::state::AppState;
+use std::time::Duration;
+
+const FIRST_USER_BOOTSTRAP_LOCK: i64 = 7_413_640_021_337;
+const LOGIN_FAILURE_LIMIT: u32 = 10;
+const LOGIN_FAILURE_WINDOW: Duration = Duration::from_secs(5 * 60);
+const SIGNUP_ATTEMPT_LIMIT: u32 = 10;
+const SIGNUP_ATTEMPT_WINDOW: Duration = Duration::from_secs(10 * 60);
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -64,12 +73,27 @@ async fn signup(
     }
 
     let email_norm = req.email.trim().to_lowercase();
+    let signup_key = rate_key("signup", &email_norm);
+    if state
+        .rate_limiter()
+        .record_attempt(&signup_key, SIGNUP_ATTEMPT_LIMIT, SIGNUP_ATTEMPT_WINDOW)
+        == RateLimitOutcome::Limited
+    {
+        return Err(ApiError::RateLimited);
+    }
+
     let password_hash = password::hash(&req.password).map_err(ApiError::Internal)?;
     let user_id = Id::new();
 
+    let tx = state.pool().begin().await?;
+    crate::db::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(FIRST_USER_BOOTSTRAP_LOCK)
+        .execute(&tx)
+        .await?;
+
     let row: Option<(String,)> = crate::db::query_tuple("SELECT id FROM users WHERE email = $1")
         .bind(&email_norm)
-        .fetch_optional(state.pool())
+        .fetch_optional(&tx)
         .await?;
     if row.is_some() {
         return Err(ApiError::Conflict("email already registered".into()));
@@ -78,7 +102,7 @@ async fn signup(
     // First signup on this instance becomes the platform admin and is
     // auto-approved so the installer isn't locked out of their own box.
     let existing_count: (i64,) = crate::db::query_tuple("SELECT COUNT(*)::bigint FROM users")
-        .fetch_one(state.pool())
+        .fetch_one(&tx)
         .await?;
     let is_first_user = existing_count.0 == 0;
 
@@ -92,8 +116,9 @@ async fn signup(
     .bind(req.display_name.trim())
     .bind(if is_first_user { "approved" } else { "pending" })
     .bind(is_first_user)
-    .execute(state.pool())
+    .execute(&tx)
     .await?;
+    tx.commit().await?;
 
     // Accept invite if one was supplied. Treat successful acceptance as
     // implicit approval — someone with a workspace already vouched for
@@ -160,6 +185,15 @@ async fn login(
     Json(req): Json<LoginRequest>,
 ) -> ApiResult<(CookieJar, Json<MeResponse>)> {
     let email_norm = req.email.trim().to_lowercase();
+    let login_key = rate_key("login", &email_norm);
+    if state
+        .rate_limiter()
+        .check(&login_key, LOGIN_FAILURE_LIMIT, LOGIN_FAILURE_WINDOW)
+        == RateLimitOutcome::Limited
+    {
+        return Err(ApiError::RateLimited);
+    }
+
     let row: Option<UserRow> = crate::db::query_as(
         "SELECT id, email, password_hash, display_name, created_at, status, \
                 is_platform_admin \
@@ -170,13 +204,20 @@ async fn login(
     .await?;
 
     let Some(row) = row else {
+        state
+            .rate_limiter()
+            .record_failure(&login_key, LOGIN_FAILURE_WINDOW);
         return Err(ApiError::Unauthorized);
     };
 
     let ok = password::verify(&req.password, &row.password_hash).map_err(ApiError::Internal)?;
     if !ok {
+        state
+            .rate_limiter()
+            .record_failure(&login_key, LOGIN_FAILURE_WINDOW);
         return Err(ApiError::Unauthorized);
     }
+    state.rate_limiter().clear(&login_key);
 
     // Waitlist gate: password is right but the account isn't usable yet.
     // 403 (Forbidden) is the right status — the credentials are valid,
@@ -301,4 +342,8 @@ fn validate_password(pw: &str) -> ApiResult<()> {
         return Err(ApiError::Validation("password too long".into()));
     }
     Ok(())
+}
+
+fn rate_key(scope: &str, email: &str) -> String {
+    format!("auth:{scope}:{}", email.trim().to_ascii_lowercase())
 }

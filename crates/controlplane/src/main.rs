@@ -25,6 +25,7 @@ mod nodes;
 mod private_network;
 mod projects;
 mod provisioner;
+mod rate_limit;
 mod registry_proxy;
 mod scheduler;
 mod services;

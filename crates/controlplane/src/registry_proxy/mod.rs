@@ -23,9 +23,14 @@ use axum::Router;
 use base64::prelude::{Engine, BASE64_STANDARD};
 use futures::TryStreamExt;
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use crate::credentials;
+use crate::rate_limit::RateLimitOutcome;
 use crate::state::AppState;
+
+const REGISTRY_AUTH_FAILURE_LIMIT: u32 = 30;
+const REGISTRY_AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(5 * 60);
 
 pub fn router() -> Router<AppState> {
     // `any` matches all HTTP methods — docker pushes use GET/HEAD/PUT/PATCH/POST/DELETE.
@@ -61,6 +66,9 @@ async fn handle(State(state): State<AppState>, req: Request) -> Response {
     };
 
     let path = req.uri().path().to_string();
+    if is_reserved_registry_path(&path) {
+        return error(StatusCode::FORBIDDEN, "registry control paths are disabled");
+    }
 
     // Authenticate. Discovery endpoints (`/v2` and `/v2/`) are workspace-agnostic
     // but still require a valid credential — that's what `docker login` relies
@@ -69,6 +77,15 @@ async fn handle(State(state): State<AppState>, req: Request) -> Response {
         Some(b) => b,
         None => return unauthorized(),
     };
+    let rate_key = format!("registry-auth:{}", basic.user.to_ascii_lowercase());
+    if state.rate_limiter().check(
+        &rate_key,
+        REGISTRY_AUTH_FAILURE_LIMIT,
+        REGISTRY_AUTH_FAILURE_WINDOW,
+    ) == RateLimitOutcome::Limited
+    {
+        return error(StatusCode::TOO_MANY_REQUESTS, "too many auth attempts");
+    }
 
     let (creds_workspace_id, cred) = match credentials::fetch_for_proxy(
         state.pool(),
@@ -78,21 +95,36 @@ async fn handle(State(state): State<AppState>, req: Request) -> Response {
     .await
     {
         Ok(Some(v)) => v,
-        Ok(None) => return unauthorized(),
+        Ok(None) => {
+            state
+                .rate_limiter()
+                .record_failure(&rate_key, REGISTRY_AUTH_FAILURE_WINDOW);
+            return unauthorized();
+        }
         Err(e) => {
             tracing::warn!(error = ?e, user = %basic.user, "registry proxy credential lookup failed");
+            state
+                .rate_limiter()
+                .record_failure(&rate_key, REGISTRY_AUTH_FAILURE_WINDOW);
             return unauthorized();
         }
     };
     if cred.kind != "registry" {
+        state
+            .rate_limiter()
+            .record_failure(&rate_key, REGISTRY_AUTH_FAILURE_WINDOW);
         return unauthorized();
     }
     if !constant_time_eq(cred.secret.as_bytes(), basic.pass.as_bytes()) {
+        state
+            .rate_limiter()
+            .record_failure(&rate_key, REGISTRY_AUTH_FAILURE_WINDOW);
         return unauthorized();
     }
+    state.rate_limiter().clear(&rate_key);
 
     // Enforce the path-scope check for anything past the discovery endpoint.
-    // `/v2`, `/v2/`, `/v2/_catalog` are the ones without a `<name>` segment.
+    // `/v2` and `/v2/` are the discovery endpoints without a `<name>` segment.
     if let Some(path_workspace) = workspace_from_path(&path) {
         if !path_workspace.eq_ignore_ascii_case(&creds_workspace_id) {
             return unauthorized();
@@ -200,7 +232,7 @@ fn parse_basic(headers: &HeaderMap) -> Option<Basic> {
 }
 
 /// First segment of the path after `/v2/`. Returns `None` for the discovery
-/// endpoints (`/v2`, `/v2/`, `/v2/_catalog`), which are workspace-agnostic.
+/// endpoints (`/v2`, `/v2/`), which are workspace-agnostic.
 fn workspace_from_path(path: &str) -> Option<&str> {
     let rest = path.strip_prefix("/v2/")?;
     let rest = rest.trim_end_matches('/');
@@ -212,6 +244,15 @@ fn workspace_from_path(path: &str) -> Option<&str> {
         return None;
     }
     Some(first)
+}
+
+fn is_reserved_registry_path(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/v2/") else {
+        return false;
+    };
+    let rest = rest.trim_matches('/');
+    let first = rest.split('/').next().unwrap_or_default();
+    !first.is_empty() && first.starts_with('_')
 }
 
 fn build_upstream_url(base: &str, incoming: &Uri) -> Result<reqwest::Url, reqwest::Error> {
@@ -272,6 +313,18 @@ mod tests {
             Some("ws_abc")
         );
         assert_eq!(workspace_from_path("/v2/ws_abc"), Some("ws_abc"));
+    }
+
+    #[test]
+    fn reserved_registry_paths_are_blocked() {
+        assert!(is_reserved_registry_path("/v2/_catalog"));
+        assert!(is_reserved_registry_path("/v2/_catalog/"));
+        assert!(is_reserved_registry_path("/v2/_debug/anything"));
+        assert!(!is_reserved_registry_path("/v2"));
+        assert!(!is_reserved_registry_path("/v2/"));
+        assert!(!is_reserved_registry_path(
+            "/v2/ws_abc/svc/manifests/latest"
+        ));
     }
 
     #[test]

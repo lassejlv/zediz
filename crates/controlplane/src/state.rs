@@ -4,6 +4,7 @@ use sea_orm::DatabaseConnection;
 
 use crate::config::Config;
 use crate::crypto::MasterKey;
+use crate::rate_limit::RateLimiter;
 use crate::scheduler::SchedulerHandle;
 
 #[derive(Clone)]
@@ -16,6 +17,7 @@ pub struct Inner {
     pub config: Config,
     pub master_key: MasterKey,
     pub scheduler: SchedulerHandle,
+    pub rate_limiter: RateLimiter,
 }
 
 impl AppState {
@@ -26,6 +28,7 @@ impl AppState {
                 config,
                 master_key,
                 scheduler: SchedulerHandle::default(),
+                rate_limiter: RateLimiter::default(),
             }),
         }
     }
@@ -44,5 +47,9 @@ impl AppState {
 
     pub fn scheduler(&self) -> &SchedulerHandle {
         &self.inner.scheduler
+    }
+
+    pub fn rate_limiter(&self) -> &RateLimiter {
+        &self.inner.rate_limiter
     }
 }

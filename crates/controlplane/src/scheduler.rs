@@ -305,19 +305,16 @@ async fn dispatch_build(state: &AppState, b: QueuedBuild) -> Result<()> {
     });
     let image_tag = format!("{registry_repo}:build-{id}", id = b.build_id);
 
-    let github_pat = match &b.github_credential_id {
-        Some(id) => {
-            let cred =
-                credentials::fetch_decrypted(state.pool(), state.master_key(), &b.workspace_id, id)
-                    .await?
-                    .ok_or_else(|| anyhow!("github credential {id} not found"))?;
-            if cred.kind != "github_pat" {
-                return Err(anyhow!("credential {id} is not a github_pat"));
-            }
-            Some(cred.secret)
+    if let Some(id) = &b.github_credential_id {
+        let cred =
+            credentials::fetch_decrypted(state.pool(), state.master_key(), &b.workspace_id, id)
+                .await?
+                .ok_or_else(|| anyhow!("github credential {id} not found"))?;
+        if cred.kind != "github_pat" {
+            return Err(anyhow!("credential {id} is not a github_pat"));
         }
-        None => None,
-    };
+    }
+    let github_credential_id = b.github_credential_id.as_deref();
 
     // Pick a builder node; any ready node works if no explicit builder pool.
     // If nothing's ready, trigger autoscale (same mechanism runtime deployments
@@ -387,11 +384,11 @@ async fn dispatch_build(state: &AppState, b: QueuedBuild) -> Result<()> {
         dockerfile_path: b.dockerfile_path.as_deref(),
         root_dir: &b.root_dir,
         image_tag: &image_tag,
-        github_pat: github_pat.as_deref(),
+        github_credential_id,
         registry: Some(RegistryAuth {
             url: &registry_meta.url,
             username: &registry_meta.username,
-            password: &registry_cred.secret,
+            credential_id: &registry_cred_id,
         }),
     });
 
@@ -983,11 +980,10 @@ async fn dispatch_to_agent(
     volume: Option<&crate::volumes::VolumeRow>,
     private_network: Option<&crate::private_network::DeploymentPrivateNetwork>,
 ) -> Result<()> {
-    // If the service references a registry credential, decrypt it and thread
-    // the (url, username, password) into the payload so bollard's create_image
-    // pulls with auth. Only meaningful for images in private registries
-    // (bundled or user-hosted). Failure to decrypt is fatal — better to error
-    // the deployment than to ship a broken command.
+    // If the service references a registry credential, validate it and thread
+    // only non-secret metadata plus the credential id into the persisted
+    // payload. The control plane hydrates the password in memory when the
+    // node claims the command.
     let registry_cred = match &p.registry_credential_id {
         Some(id) => Some(
             credentials::fetch_decrypted(state.pool(), state.master_key(), &p.workspace_id, id)
@@ -997,15 +993,23 @@ async fn dispatch_to_agent(
         ),
         None => None,
     };
-    let registry_auth = registry_cred.as_ref().and_then(|c| {
-        let url = c.metadata.get("url").and_then(|v| v.as_str())?;
-        let username = c.metadata.get("username").and_then(|v| v.as_str())?;
-        Some(RegistryAuth {
-            url,
-            username,
-            password: &c.secret,
-        })
-    });
+    if let Some(c) = &registry_cred {
+        if c.kind != "registry" {
+            return Err(anyhow!("service credential is not a registry credential"));
+        }
+    }
+    let registry_auth = match (&p.registry_credential_id, registry_cred.as_ref()) {
+        (Some(id), Some(c)) => {
+            let url = c.metadata.get("url").and_then(|v| v.as_str());
+            let username = c.metadata.get("username").and_then(|v| v.as_str());
+            url.zip(username).map(|(url, username)| RegistryAuth {
+                url,
+                username,
+                credential_id: id,
+            })
+        }
+        _ => None,
+    };
 
     // Build the volume mount block (if any). The `device_path` follows
     // Hetzner's stable `/dev/disk/by-id/scsi-0HC_Volume_<id>` naming;
