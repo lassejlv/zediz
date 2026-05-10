@@ -2,8 +2,8 @@ use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use driftbase_common::Id;
+use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthUser;
 use crate::domains::{self, validate_hostname};
@@ -35,7 +35,7 @@ pub struct DomainSummary {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sea_orm::FromQueryResult)]
 struct DomainRow {
     id: String,
     service_id: String,
@@ -70,17 +70,17 @@ impl TryFrom<DomainRow> for DomainSummary {
 }
 
 async fn resolve_service(
-    pool: &sqlx::PgPool,
+    pool: &sea_orm::DatabaseConnection,
     workspace_id: &Id,
     project_slug: &str,
     service_slug: &str,
 ) -> ApiResult<(Id, i32)> {
-    #[derive(sqlx::FromRow)]
+    #[derive(sea_orm::FromQueryResult)]
     struct Row {
         id: String,
         first_port: Option<i32>,
     }
-    let row: Option<Row> = sqlx::query_as(
+    let row: Option<Row> = crate::db::query_as(
         "SELECT s.id, \
                 (SELECT (p.value->>'container_port')::int \
                  FROM jsonb_array_elements(s.ports) p LIMIT 1) AS first_port \
@@ -115,7 +115,7 @@ async fn list(
     )
     .await?;
 
-    let rows: Vec<DomainRow> = sqlx::query_as(
+    let rows: Vec<DomainRow> = crate::db::query_as(
         "SELECT id, service_id, hostname, container_port, tls_status, \
                 last_error, last_cert_at, created_at \
          FROM service_domains WHERE service_id = $1 ORDER BY created_at ASC",
@@ -162,7 +162,7 @@ async fn create(
     }
 
     let id = Id::new();
-    let inserted: Option<DomainRow> = sqlx::query_as(
+    let inserted: Option<DomainRow> = crate::db::query_as(
         "INSERT INTO service_domains (id, service_id, hostname, container_port) \
          VALUES ($1, $2, $3, $4) \
          ON CONFLICT (hostname) DO NOTHING \
@@ -212,7 +212,7 @@ async fn update(
         }
     }
 
-    let row: Option<DomainRow> = sqlx::query_as(
+    let row: Option<DomainRow> = crate::db::query_as(
         "UPDATE service_domains SET \
             container_port = COALESCE($1, container_port), \
             updated_at = now() \
@@ -249,7 +249,7 @@ async fn delete(
     )
     .await?;
 
-    let res = sqlx::query("DELETE FROM service_domains WHERE id = $1 AND service_id = $2")
+    let res = crate::db::query("DELETE FROM service_domains WHERE id = $1 AND service_id = $2")
         .bind(&id)
         .bind(service_id.to_string())
         .execute(state.pool())

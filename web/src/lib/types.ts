@@ -69,6 +69,8 @@ export interface ProjectSummary {
   id: string;
   slug: string;
   name: string;
+  private_network_enabled: boolean;
+  private_network_domain: string;
   created_at: string;
 }
 
@@ -95,6 +97,7 @@ export interface ServiceSummary {
   id: string;
   slug: string;
   name: string;
+  private_hostname: string;
   source: ServiceSource;
   image_ref: string | null;
   env_vars: EnvVars;
@@ -202,6 +205,22 @@ export interface NodeSummary {
   used_disk_mb: number;
   labels: Record<string, unknown>;
   public_ipv4: string | null;
+  agent_version: string | null;
+  agent_image_ref: string | null;
+  agent_image_digest: string | null;
+  agent_self_update_capable: boolean;
+  agent_update_status: string;
+  agent_update_checked_at: string | null;
+  agent_update_target_image_ref: string | null;
+  agent_update_target_digest: string | null;
+  agent_update_command_id: string | null;
+  agent_update_error: string | null;
+  agent_update_started_at: string | null;
+  agent_update_finished_at: string | null;
+  private_network_capable: boolean;
+  wireguard_mesh_ip: string | null;
+  private_network_synced_at: string | null;
+  private_network_sync_error: string | null;
   last_seen_at: string | null;
   created_at: string;
   workloads: NodeWorkloadSummary[];

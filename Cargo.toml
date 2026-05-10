@@ -38,7 +38,8 @@ serde_json = "1"
 bincode = "1"
 
 # DB
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "macros", "chrono", "uuid", "json", "migrate"] }
+sea-orm = { version = "=1.1.14", default-features = false, features = ["macros", "runtime-tokio-rustls", "sqlx-postgres", "with-chrono", "with-json", "with-uuid"] }
+sea-orm-migration = { version = "=1.1.14", default-features = false, features = ["runtime-tokio-rustls", "sqlx-postgres", "with-chrono", "with-json", "with-uuid"] }
 
 # Crypto / IDs
 argon2 = "0.5"

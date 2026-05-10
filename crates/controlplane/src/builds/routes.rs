@@ -23,7 +23,7 @@ async fn list(
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
 
     // Resolve service_id cheaply without pulling the full ServiceSummary.
-    let row: Option<(String,)> = sqlx::query_as(
+    let row: Option<(String,)> = crate::db::query_tuple(
         "SELECT s.id FROM services s \
          JOIN projects p ON p.id = s.project_id \
          WHERE p.workspace_id = $1 AND p.slug = $2 AND s.slug = $3",

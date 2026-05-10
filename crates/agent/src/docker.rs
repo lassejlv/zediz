@@ -1,11 +1,14 @@
 use anyhow::{anyhow, Context, Result};
 use bollard::auth::DockerCredentials;
 use bollard::container::{
-    Config, CreateContainerOptions, LogOutput, LogsOptions, RemoveContainerOptions, StatsOptions,
-    StopContainerOptions,
+    Config, CreateContainerOptions, LogOutput, LogsOptions, NetworkingConfig,
+    RemoveContainerOptions, StatsOptions, StopContainerOptions,
 };
 use bollard::image::CreateImageOptions;
-use bollard::models::{HostConfig, PortBinding, RestartPolicy, RestartPolicyNameEnum};
+use bollard::models::{
+    EndpointIpamConfig, EndpointSettings, HostConfig, PortBinding, RestartPolicy,
+    RestartPolicyNameEnum,
+};
 use bollard::Docker;
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
@@ -152,12 +155,39 @@ impl DockerExec {
                 name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
                 ..Default::default()
             }),
-            // Join the shared `driftbase` network so Caddy can reach this
-            // container by name for domain routing.
-            network_mode: Some(crate::caddy::NETWORK.into()),
+            network_mode: Some(
+                spec.private_network
+                    .as_ref()
+                    .map(|n| n.network_name.clone())
+                    .unwrap_or_else(|| crate::caddy::NETWORK.into()),
+            ),
+            dns: spec
+                .private_network
+                .as_ref()
+                .map(|n| vec![n.dns_ip.clone()]),
+            dns_search: spec
+                .private_network
+                .as_ref()
+                .map(|_| vec!["driftbase.internal".to_string()]),
             mounts,
             ..Default::default()
         };
+
+        let networking_config = spec.private_network.as_ref().map(|n| {
+            let mut endpoints_config = HashMap::new();
+            endpoints_config.insert(
+                n.network_name.clone(),
+                EndpointSettings {
+                    ipam_config: Some(EndpointIpamConfig {
+                        ipv4_address: Some(n.ip_address.clone()),
+                        ..Default::default()
+                    }),
+                    aliases: Some(n.aliases.clone()),
+                    ..Default::default()
+                },
+            );
+            NetworkingConfig { endpoints_config }
+        });
 
         let config: Config<String> = Config {
             image: Some(spec.image.clone()),
@@ -173,6 +203,7 @@ impl DockerExec {
             },
             labels: Some(labels),
             host_config: Some(host_config),
+            networking_config,
             ..Default::default()
         };
 
@@ -453,6 +484,7 @@ pub struct RunSpec {
     /// before starting the container, then bind-mounts that host path
     /// into the container at `container_path`.
     pub volume: Option<VolumeMount>,
+    pub private_network: Option<PrivateNetworkSpec>,
 }
 
 #[derive(Debug, Clone)]
@@ -460,6 +492,14 @@ pub struct VolumeMount {
     pub device_path: String,
     pub host_path: String,
     pub container_path: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PrivateNetworkSpec {
+    pub network_name: String,
+    pub ip_address: String,
+    pub dns_ip: String,
+    pub aliases: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

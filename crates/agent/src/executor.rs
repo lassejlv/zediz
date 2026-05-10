@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::client::{
     CommandAck, ContainerMetricSample, ControlPlaneClient, HeartbeatBody, StatusBody,
 };
-use crate::docker::{DockerExec, PortSpec, RegistryAuth, RunSpec, VolumeMount};
+use crate::docker::{DockerExec, PortSpec, PrivateNetworkSpec, RegistryAuth, RunSpec, VolumeMount};
 
 /// Upper bound on a single `pull_and_run` so a hung Docker daemon or
 /// unreachable registry can't leave the deployment stuck forever. The
@@ -19,6 +19,10 @@ pub struct Executor {
     node_token: String,
     #[allow(dead_code)]
     node_id: String,
+    private_network: Option<crate::private_network::Identity>,
+    agent_update: crate::self_update::AgentUpdateState,
+    pending_acks: Vec<CommandAck>,
+    restart_after_ack: bool,
     /// deployment_id → last-seen docker log timestamp (unix seconds).
     log_cursors: HashMap<String, i64>,
     /// Deployment ids currently running on this node — we scrape their logs.
@@ -31,25 +35,45 @@ impl Executor {
         docker: DockerExec,
         node_token: String,
         node_id: String,
+        private_network: Option<crate::private_network::Identity>,
+        agent_update: crate::self_update::AgentUpdateState,
     ) -> Self {
         Self {
             client,
             docker,
             node_token,
             node_id,
+            private_network,
+            agent_update,
+            pending_acks: Vec::new(),
+            restart_after_ack: false,
             log_cursors: HashMap::new(),
             tracked: std::collections::HashSet::new(),
         }
     }
 
     pub async fn tick(&mut self) -> Result<()> {
-        let body = HeartbeatBody::default();
-        let mut resp = self.client.heartbeat(&self.node_token, &body).await?;
+        let initial_acks = std::mem::take(&mut self.pending_acks);
+        let exit_after_initial_ack = self.restart_after_ack && !initial_acks.is_empty();
+        let body = self.heartbeat_body(initial_acks.clone(), Vec::new());
+        let mut resp = match self.client.heartbeat(&self.node_token, &body).await {
+            Ok(resp) => {
+                if exit_after_initial_ack {
+                    exit_for_update();
+                }
+                resp
+            }
+            Err(e) => {
+                self.pending_acks.extend(initial_acks);
+                return Err(e);
+            }
+        };
         resp.commands.sort_by_key(|cmd| cmd.created_at);
         let mut metrics_sent = false;
         let mut rounds = 0usize;
         loop {
             let acks = self.execute_commands(resp.commands).await;
+            let exit_after_ack = self.restart_after_ack && !acks.is_empty();
 
             // Reconcile tracked deployments against Docker so a missed status
             // POST (network blip, CP restart) doesn't leave a live container
@@ -78,13 +102,12 @@ impl Executor {
                 break;
             }
 
-            let body = HeartbeatBody {
-                acks,
-                container_metrics: metrics,
-                ..Default::default()
-            };
+            let body = self.heartbeat_body(acks, metrics);
             match self.client.heartbeat(&self.node_token, &body).await {
                 Ok(mut next) => {
+                    if exit_after_ack {
+                        exit_for_update();
+                    }
                     next.commands.sort_by_key(|cmd| cmd.created_at);
                     if next.commands.is_empty() {
                         break;
@@ -92,6 +115,7 @@ impl Executor {
                     resp = next;
                 }
                 Err(e) => {
+                    self.pending_acks.extend(body.acks);
                     tracing::warn!(error = ?e, "follow-up heartbeat failed");
                     break;
                 }
@@ -104,6 +128,28 @@ impl Executor {
             }
         }
         Ok(())
+    }
+
+    fn heartbeat_body(
+        &self,
+        acks: Vec<CommandAck>,
+        container_metrics: Vec<ContainerMetricSample>,
+    ) -> HeartbeatBody {
+        let mut body = HeartbeatBody {
+            acks,
+            container_metrics,
+            ..Default::default()
+        };
+        body.agent_version = Some(env!("CARGO_PKG_VERSION").to_string());
+        body.agent_image_ref = self.agent_update.image_ref.clone();
+        body.agent_image_digest = self.agent_update.image_digest.clone();
+        body.agent_self_update_capable = Some(self.agent_update.self_update_capable);
+        if let Some(identity) = self.private_network.as_ref() {
+            body.private_network_capable = Some(true);
+            body.wireguard_public_key = Some(identity.public_key.clone());
+            body.wireguard_listen_port = Some(identity.listen_port);
+        }
+        body
     }
 
     async fn execute_commands(&mut self, commands: Vec<crate::client::Command>) -> Vec<CommandAck> {
@@ -236,6 +282,14 @@ impl Executor {
                 Ok(()) => ok(id),
                 Err(e) => err(id, e.to_string()),
             },
+            "sync_private_network" => match self.handle_sync_private_network(cmd).await {
+                Ok(()) => ok(id),
+                Err(e) => err(id, e.to_string()),
+            },
+            "update_agent" => match self.handle_update_agent(cmd).await {
+                Ok(()) => ok(id),
+                Err(e) => err(id, e.to_string()),
+            },
             "build" => match self.handle_build(cmd).await {
                 Ok(()) => ok(id),
                 Err(e) => err(id, e.to_string()),
@@ -248,6 +302,19 @@ impl Executor {
         let spec: crate::build::BuildSpec = serde_json::from_value(cmd.payload)
             .map_err(|e| anyhow::anyhow!("bad build payload: {e}"))?;
         crate::build::run_build(&self.client, &self.node_token, spec).await
+    }
+
+    async fn handle_sync_private_network(&mut self, cmd: crate::client::Command) -> Result<()> {
+        crate::private_network::sync(self.docker.inner(), cmd.payload).await
+    }
+
+    async fn handle_update_agent(&mut self, cmd: crate::client::Command) -> Result<()> {
+        let payload: crate::self_update::UpdateAgentPayload =
+            serde_json::from_value(cmd.payload)
+                .map_err(|e| anyhow::anyhow!("bad update_agent payload: {e}"))?;
+        crate::self_update::prepare_update(&self.node_token, &payload).await?;
+        self.restart_after_ack = true;
+        Ok(())
     }
 
     async fn handle_update_routes(&mut self, cmd: crate::client::Command) -> Result<()> {
@@ -471,6 +538,11 @@ fn err(id: String, msg: String) -> CommandAck {
     }
 }
 
+fn exit_for_update() -> ! {
+    tracing::info!("agent update acknowledged; exiting for systemd restart");
+    std::process::exit(0);
+}
+
 fn parse_run_spec(deployment_id: &str, payload: &serde_json::Value) -> Result<RunSpec> {
     let image = payload
         .get("image")
@@ -533,6 +605,28 @@ fn parse_run_spec(deployment_id: &str, payload: &serde_json::Value) -> Result<Ru
         })
     });
 
+    let private_network = payload.get("private_network").and_then(|v| {
+        let network_name = v.get("network_name")?.as_str()?.to_string();
+        let ip_address = v.get("ip_address")?.as_str()?.to_string();
+        let dns_ip = v.get("dns_ip")?.as_str()?.to_string();
+        let aliases = v
+            .get("aliases")
+            .and_then(|aliases| aliases.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        Some(PrivateNetworkSpec {
+            network_name,
+            ip_address,
+            dns_ip,
+            aliases,
+        })
+    });
+
     Ok(RunSpec {
         deployment_id: deployment_id.into(),
         image,
@@ -542,5 +636,52 @@ fn parse_run_spec(deployment_id: &str, payload: &serde_json::Value) -> Result<Ru
         memory_mb,
         registry,
         volume,
+        private_network,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_private_network_payload() {
+        let spec = parse_run_spec(
+            "dep1",
+            &serde_json::json!({
+                "image": "nginx:latest",
+                "env": {},
+                "ports": [],
+                "cpu_millis": 500,
+                "memory_mb": 256,
+                "private_network": {
+                    "network_name": "driftbase-pn-project",
+                    "ip_address": "10.64.1.10",
+                    "dns_ip": "10.64.1.2",
+                    "aliases": ["api", "api.driftbase.internal"]
+                }
+            }),
+        )
+        .unwrap();
+        let private = spec.private_network.unwrap();
+        assert_eq!(private.network_name, "driftbase-pn-project");
+        assert_eq!(private.ip_address, "10.64.1.10");
+        assert_eq!(private.aliases[1], "api.driftbase.internal");
+    }
+
+    #[test]
+    fn old_payloads_without_private_network_still_parse() {
+        let spec = parse_run_spec(
+            "dep1",
+            &serde_json::json!({
+                "image": "nginx:latest",
+                "env": {},
+                "ports": [],
+                "cpu_millis": 500,
+                "memory_mb": 256
+            }),
+        )
+        .unwrap();
+        assert!(spec.private_network.is_none());
+    }
 }

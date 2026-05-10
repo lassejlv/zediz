@@ -2,13 +2,14 @@ use std::net::SocketAddr;
 
 use anyhow::{Context, Result};
 use axum::{routing::get, Json, Router};
+use driftbase_common::telemetry;
 use serde::Serialize;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
-use driftbase_common::telemetry;
 
 mod admin;
 mod agent;
+mod agent_updates;
 mod auth;
 mod builds;
 mod config;
@@ -17,8 +18,11 @@ mod crypto;
 mod db;
 mod deployments;
 mod domains;
+mod entity;
 mod error;
+mod migration;
 mod nodes;
+mod private_network;
 mod projects;
 mod provisioner;
 mod registry_proxy;

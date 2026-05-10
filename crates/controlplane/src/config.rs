@@ -4,6 +4,8 @@ use anyhow::{anyhow, Context, Result};
 
 use crate::crypto::MasterKey;
 
+pub const DEFAULT_AGENT_IMAGE: &str = "ghcr.io/lassejlv/driftbase-agent:latest";
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub bind_addr: SocketAddr,
@@ -18,6 +20,9 @@ pub struct Config {
     /// Internal URL the CP uses to reach the registry container. Only
     /// meaningful when `registry_site` is set.
     pub registry_upstream: String,
+    /// Desired node-agent image. The node update checker resolves this ref to
+    /// a registry digest and compares nodes against it.
+    pub agent_image: String,
 }
 
 pub struct LoadedConfig {
@@ -33,8 +38,8 @@ impl Config {
             .context("DRIFTBASE_BIND_ADDR")?;
         let database_url = std::env::var("DRIFTBASE_DATABASE_URL")
             .map_err(|_| anyhow!("DRIFTBASE_DATABASE_URL is required"))?;
-        let public_url =
-            std::env::var("DRIFTBASE_PUBLIC_URL").unwrap_or_else(|_| "http://localhost:8080".into());
+        let public_url = std::env::var("DRIFTBASE_PUBLIC_URL")
+            .unwrap_or_else(|_| "http://localhost:8080".into());
         let cookie_secure = std::env::var("DRIFTBASE_COOKIE_SECURE")
             .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
             .unwrap_or(false);
@@ -50,6 +55,11 @@ impl Config {
             .filter(|s| !s.is_empty());
         let registry_upstream = std::env::var("DRIFTBASE_REGISTRY_UPSTREAM")
             .unwrap_or_else(|_| "http://registry:5000".into());
+        let agent_image = std::env::var("DRIFTBASE_AGENT_IMAGE")
+            .map(|s| s.trim().to_string())
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_AGENT_IMAGE.to_string());
 
         Ok(LoadedConfig {
             config: Self {
@@ -59,6 +69,7 @@ impl Config {
                 cookie_secure,
                 registry_site,
                 registry_upstream,
+                agent_image,
             },
             master_key,
         })

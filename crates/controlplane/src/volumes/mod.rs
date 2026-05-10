@@ -1,8 +1,8 @@
 pub mod routes;
 
 use chrono::{DateTime, Utc};
+use sea_orm::DatabaseConnection;
 use serde::Serialize;
-use sqlx::PgPool;
 use std::time::Duration;
 
 use crate::credentials;
@@ -28,7 +28,7 @@ pub struct VolumeSummary {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, sea_orm::FromQueryResult)]
 pub struct VolumeRow {
     pub id: String,
     pub workspace_id: String,
@@ -71,8 +71,8 @@ pub const VOLUME_COLUMNS: &str = "id, workspace_id, name, size_gb, hetzner_volum
      hetzner_location, attached_node_id, attached_service_id, mount_path, status, reason, \
      created_at, updated_at";
 
-pub async fn fetch_by_id(pool: &PgPool, id: &str) -> ApiResult<Option<VolumeRow>> {
-    let row: Option<VolumeRow> = sqlx::query_as(&format!(
+pub async fn fetch_by_id(pool: &DatabaseConnection, id: &str) -> ApiResult<Option<VolumeRow>> {
+    let row: Option<VolumeRow> = crate::db::query_as(format!(
         "SELECT {VOLUME_COLUMNS} FROM volumes WHERE id = $1",
     ))
     .bind(id)
@@ -83,8 +83,11 @@ pub async fn fetch_by_id(pool: &PgPool, id: &str) -> ApiResult<Option<VolumeRow>
 
 /// Load the volume attached to a service, if any. Used by the scheduler
 /// and the deploy handler to decide whether to pin placement.
-pub async fn fetch_for_service(pool: &PgPool, service_id: &str) -> ApiResult<Option<VolumeRow>> {
-    let row: Option<VolumeRow> = sqlx::query_as(&format!(
+pub async fn fetch_for_service(
+    pool: &DatabaseConnection,
+    service_id: &str,
+) -> ApiResult<Option<VolumeRow>> {
+    let row: Option<VolumeRow> = crate::db::query_as(format!(
         "SELECT {VOLUME_COLUMNS} FROM volumes WHERE attached_service_id = $1",
     ))
     .bind(service_id)
@@ -98,7 +101,7 @@ pub async fn fetch_for_service(pool: &PgPool, service_id: &str) -> ApiResult<Opt
 /// If the workspace no longer has a Hetzner token, this preserves the
 /// existing API behavior and only removes the local row.
 pub async fn delete_backing_volume_and_row(
-    pool: &PgPool,
+    pool: &DatabaseConnection,
     master_key: &MasterKey,
     workspace_id: &str,
     row: &VolumeRow,
@@ -126,7 +129,7 @@ pub async fn delete_backing_volume_and_row(
         }
     }
 
-    sqlx::query("DELETE FROM volumes WHERE id = $1")
+    crate::db::query("DELETE FROM volumes WHERE id = $1")
         .bind(&row.id)
         .execute(pool)
         .await?;

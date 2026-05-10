@@ -3,9 +3,9 @@ use axum::routing::get;
 use axum::{Json, Router};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use chrono::{DateTime, Utc};
+use driftbase_common::Id;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use driftbase_common::Id;
 
 use crate::auth::AuthUser;
 use crate::error::{ApiError, ApiResult};
@@ -32,7 +32,7 @@ pub struct SshKeySummary {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sea_orm::FromQueryResult)]
 struct SshKeyRow {
     id: String,
     name: String,
@@ -69,7 +69,7 @@ async fn list(
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
     membership::require(&ctx, Role::Admin)?;
 
-    let rows: Vec<SshKeyRow> = sqlx::query_as(
+    let rows: Vec<SshKeyRow> = crate::db::query_as(
         "SELECT id, name, public_key, fingerprint, \
          (private_key_encrypted IS NOT NULL) AS has_private_key, \
          hetzner_key_id, created_at \
@@ -122,7 +122,7 @@ async fn create(
     };
 
     let id = Id::new();
-    let inserted: Option<SshKeyRow> = sqlx::query_as(
+    let inserted: Option<SshKeyRow> = crate::db::query_as(
         "INSERT INTO ssh_keys (id, workspace_id, name, public_key, fingerprint, private_key_encrypted, created_by) \
          VALUES ($1, $2, $3, $4, $5, $6, $7) \
          ON CONFLICT (workspace_id, name) DO NOTHING \
@@ -153,7 +153,7 @@ async fn delete(
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
     membership::require(&ctx, Role::Admin)?;
 
-    let res = sqlx::query("DELETE FROM ssh_keys WHERE id = $1 AND workspace_id = $2")
+    let res = crate::db::query("DELETE FROM ssh_keys WHERE id = $1 AND workspace_id = $2")
         .bind(&id)
         .bind(ctx.workspace_id.to_string())
         .execute(state.pool())

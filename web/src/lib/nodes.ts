@@ -44,6 +44,43 @@ export function useDeleteNode(slug: string) {
   });
 }
 
+export interface AgentUpdateResponse {
+  status: string;
+  update_available: boolean;
+  target_image_ref: string | null;
+  target_digest: string | null;
+  error: string | null;
+  command_id: string | null;
+}
+
+export function useCheckNodeAgentUpdate(slug: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (nodeId: string) =>
+      api<AgentUpdateResponse>(
+        `/workspaces/${encodeURIComponent(slug)}/nodes/${encodeURIComponent(nodeId)}/agent-update/check`,
+        { method: 'POST' },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['workspace', slug, 'nodes'] });
+    },
+  });
+}
+
+export function useUpdateNodeAgent(slug: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (nodeId: string) =>
+      api<AgentUpdateResponse>(
+        `/workspaces/${encodeURIComponent(slug)}/nodes/${encodeURIComponent(nodeId)}/agent-update`,
+        { method: 'POST' },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['workspace', slug, 'nodes'] });
+    },
+  });
+}
+
 export interface ProvisionNodeInput {
   server_type?: string;
   location?: string;

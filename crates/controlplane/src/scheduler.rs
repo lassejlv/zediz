@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
+use sea_orm::{DatabaseConnection, TransactionTrait};
 use serde_json::{json, Value as JsonValue};
-use sqlx::PgPool;
 use tokio::sync::Notify;
 
 use crate::agent::commands::{self, BuildPayload, CommandKind, RegistryAuth};
@@ -100,10 +100,12 @@ pub fn spawn(state: AppState) -> SchedulerHandle {
 const METRICS_HISTORY_MINUTES: i64 = 60;
 
 async fn trim_metrics_history(state: &AppState) -> Result<()> {
-    sqlx::query("DELETE FROM deployment_metrics WHERE ts < now() - ($1 || ' minutes')::interval")
-        .bind(METRICS_HISTORY_MINUTES)
-        .execute(state.pool())
-        .await?;
+    crate::db::query(
+        "DELETE FROM deployment_metrics WHERE ts < now() - ($1 || ' minutes')::interval",
+    )
+    .bind(METRICS_HISTORY_MINUTES)
+    .execute(state.pool())
+    .await?;
     Ok(())
 }
 
@@ -120,11 +122,12 @@ const STALE_DEPLOYMENT_MINUTES: i64 = 15;
 /// refreshes Caddy routes so a stuck deployment can't keep claiming a
 /// domain.
 async fn reap_stale_deployments(state: &AppState) -> Result<()> {
-    let rows: Vec<(String, Option<String>, String)> = sqlx::query_as(
+    let rows: Vec<(String, Option<String>, String)> = crate::db::query_tuple(
         "UPDATE deployments \
          SET status = 'errored', \
              reason = 'stuck in ' || status || ' for over ' || $1::text || ' minutes', \
              stopped_at = now(), \
+             private_ipv4 = NULL, \
              updated_at = now() \
          WHERE status IN ('pulling', 'starting') \
            AND updated_at < now() - ($1 || ' minutes')::interval \
@@ -142,7 +145,7 @@ async fn reap_stale_deployments(state: &AppState) -> Result<()> {
             "reaped deployment stuck in transient state",
         );
 
-        let _ = sqlx::query("DELETE FROM node_allocations WHERE deployment_id = $1")
+        let _ = crate::db::query("DELETE FROM node_allocations WHERE deployment_id = $1")
             .bind(&deployment_id)
             .execute(state.pool())
             .await;
@@ -159,6 +162,9 @@ async fn reap_stale_deployments(state: &AppState) -> Result<()> {
             if let Err(e) = push_routes_for_node(state.pool(), &node_id).await {
                 tracing::warn!(error = ?e, node = %node_id, "push_routes_for_node after reap");
             }
+        }
+        if let Err(e) = crate::private_network::sync_for_service(state.pool(), &service_id).await {
+            tracing::warn!(error = ?e, service = %service_id, "sync private network after reap");
         }
     }
     Ok(())
@@ -180,8 +186,9 @@ async fn tick_once(state: &AppState) -> Result<()> {
     for p in pending {
         if let Err(e) = place_and_run(state, &p).await {
             tracing::error!(deployment = %p.deployment_id, error = ?e, "placement failed");
-            let _ = sqlx::query(
-                "UPDATE deployments SET status = 'errored', reason = $1, updated_at = now() \
+            let _ = crate::db::query(
+                "UPDATE deployments SET status = 'errored', reason = $1, \
+                                        private_ipv4 = NULL, updated_at = now() \
                  WHERE id = $2",
             )
             .bind(e.to_string())
@@ -209,8 +216,8 @@ struct QueuedBuild {
     registry_credential_id: Option<String>,
 }
 
-async fn fetch_queued_builds(pool: &PgPool) -> Result<Vec<QueuedBuild>> {
-    #[derive(sqlx::FromRow)]
+async fn fetch_queued_builds(pool: &DatabaseConnection) -> Result<Vec<QueuedBuild>> {
+    #[derive(sea_orm::FromQueryResult)]
     struct Row {
         build_id: String,
         deployment_id: Option<String>,
@@ -226,7 +233,7 @@ async fn fetch_queued_builds(pool: &PgPool) -> Result<Vec<QueuedBuild>> {
         registry_credential_id: Option<String>,
     }
 
-    let rows: Vec<Row> = sqlx::query_as(
+    let rows: Vec<Row> = crate::db::query_as(
         "SELECT b.id AS build_id, b.deployment_id, s.id AS service_id, w.id AS workspace_id, \
                 s.git_repo, s.git_branch, s.builder, s.dockerfile_path, s.root_dir, \
                 s.registry_repo, s.github_credential_id, s.registry_credential_id \
@@ -332,7 +339,7 @@ async fn dispatch_build(state: &AppState, b: QueuedBuild) -> Result<()> {
                     }
                     ProvisionOutcome::Skipped(msg) => msg,
                 };
-            sqlx::query(
+            crate::db::query(
                 "UPDATE builds SET reason = $1, updated_at = now() \
                  WHERE id = $2 AND status = 'queued'",
             )
@@ -345,8 +352,8 @@ async fn dispatch_build(state: &AppState, b: QueuedBuild) -> Result<()> {
     };
 
     // Reserve + claim the build.
-    let mut tx = state.pool().begin().await?;
-    sqlx::query(
+    let tx = state.pool().begin().await?;
+    crate::db::query(
         "INSERT INTO node_allocations (node_id, deployment_id, cpu_millis, memory_mb, disk_mb) \
          VALUES ($1, $2, $3, $4, $5) \
          ON CONFLICT (node_id, deployment_id) DO NOTHING",
@@ -356,9 +363,9 @@ async fn dispatch_build(state: &AppState, b: QueuedBuild) -> Result<()> {
     .bind(BUILD_CPU_MILLIS as i32)
     .bind(BUILD_MEMORY_MB as i32)
     .bind(BUILD_DISK_MB as i32)
-    .execute(&mut *tx)
+    .execute(&tx)
     .await?;
-    sqlx::query(
+    crate::db::query(
         "UPDATE builds SET node_id = $1, status = 'cloning', started_at = now(), \
                             image_tag = $2, updated_at = now() \
          WHERE id = $3 AND status = 'queued'",
@@ -366,7 +373,7 @@ async fn dispatch_build(state: &AppState, b: QueuedBuild) -> Result<()> {
     .bind(&node.id)
     .bind(&image_tag)
     .bind(&b.build_id)
-    .execute(&mut *tx)
+    .execute(&tx)
     .await?;
     tx.commit().await?;
 
@@ -421,10 +428,13 @@ impl RegistryMeta {
     }
 }
 
-async fn pick_builder_node(pool: &PgPool, workspace_id: &str) -> Result<Option<NodeCapacity>> {
+async fn pick_builder_node(
+    pool: &DatabaseConnection,
+    workspace_id: &str,
+) -> Result<Option<NodeCapacity>> {
     // If the workspace has any node tagged `role=builder`, prefer those
     // exclusively. Otherwise any ready node will do.
-    let rows: Vec<NodeCapacity> = sqlx::query_as(
+    let rows: Vec<NodeCapacity> = crate::db::query_as(
         "SELECT n.id, n.provider, n.total_cpu_millis, n.total_memory_mb, n.total_disk_mb, \
                 COALESCE(SUM(a.cpu_millis), 0)::bigint AS used_cpu_millis, \
                 COALESCE(SUM(a.memory_mb), 0)::bigint AS used_memory_mb, \
@@ -469,8 +479,8 @@ async fn pick_builder_node(pool: &PgPool, workspace_id: &str) -> Result<Option<N
     Ok(fits.into_iter().next().map(|(n, _)| n))
 }
 
-async fn fail_build(pool: &PgPool, build_id: &str, reason: &str) -> Result<()> {
-    sqlx::query(
+async fn fail_build(pool: &DatabaseConnection, build_id: &str, reason: &str) -> Result<()> {
+    crate::db::query(
         "UPDATE builds SET status = 'failed', reason = $1, finished_at = now(), \
                             updated_at = now() \
          WHERE id = $2 AND status NOT IN ('succeeded','failed','cancelled')",
@@ -480,7 +490,7 @@ async fn fail_build(pool: &PgPool, build_id: &str, reason: &str) -> Result<()> {
     .execute(pool)
     .await?;
     // Mirror the failure onto the deployment the build was for.
-    sqlx::query(
+    crate::db::query(
         "UPDATE deployments SET status = 'errored', reason = $1, \
                                  stopped_at = now(), updated_at = now() \
          WHERE id = (SELECT deployment_id FROM builds WHERE id = $2) \
@@ -490,7 +500,7 @@ async fn fail_build(pool: &PgPool, build_id: &str, reason: &str) -> Result<()> {
     .bind(build_id)
     .execute(pool)
     .await?;
-    sqlx::query(
+    crate::db::query(
         "DELETE FROM node_allocations \
          WHERE deployment_id = (SELECT deployment_id FROM builds WHERE id = $1)",
     )
@@ -503,6 +513,8 @@ async fn fail_build(pool: &PgPool, build_id: &str, reason: &str) -> Result<()> {
 struct PendingDeployment {
     deployment_id: String,
     service_id: String,
+    project_id: String,
+    service_slug: String,
     workspace_id: String,
     image: String,
     env_vars: BTreeMap<String, String>,
@@ -514,11 +526,13 @@ struct PendingDeployment {
     registry_credential_id: Option<String>,
 }
 
-async fn fetch_pending(pool: &PgPool) -> Result<Vec<PendingDeployment>> {
-    #[derive(sqlx::FromRow)]
+async fn fetch_pending(pool: &DatabaseConnection) -> Result<Vec<PendingDeployment>> {
+    #[derive(sea_orm::FromQueryResult)]
     struct Row {
         deployment_id: String,
         service_id: String,
+        project_id: String,
+        service_slug: String,
         workspace_id: String,
         image: String,
         env: JsonValue,
@@ -527,8 +541,9 @@ async fn fetch_pending(pool: &PgPool) -> Result<Vec<PendingDeployment>> {
         registry_credential_id: Option<String>,
     }
 
-    let rows: Vec<Row> = sqlx::query_as(
-        "SELECT d.id AS deployment_id, d.service_id, w.id AS workspace_id, d.image_ref AS image, \
+    let rows: Vec<Row> = crate::db::query_as(
+        "SELECT d.id AS deployment_id, d.service_id, p.id AS project_id, \
+                s.slug AS service_slug, w.id AS workspace_id, d.image_ref AS image, \
                 d.env_vars AS env, d.ports, d.resources, s.registry_credential_id \
          FROM deployments d \
          JOIN services s ON s.id = d.service_id \
@@ -552,6 +567,8 @@ async fn fetch_pending(pool: &PgPool) -> Result<Vec<PendingDeployment>> {
         out.push(PendingDeployment {
             deployment_id: r.deployment_id,
             service_id: r.service_id,
+            project_id: r.project_id,
+            service_slug: r.service_slug,
             workspace_id: r.workspace_id,
             image: r.image,
             env_vars,
@@ -563,7 +580,7 @@ async fn fetch_pending(pool: &PgPool) -> Result<Vec<PendingDeployment>> {
     Ok(out)
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sea_orm::FromQueryResult)]
 struct NodeCapacity {
     id: String,
     provider: String,
@@ -575,13 +592,14 @@ struct NodeCapacity {
     used_disk_mb: Option<i64>,
 }
 
-/// First-fit-decreasing by free memory. Ready nodes only.
+/// First-fit-decreasing by free memory. Runtime deployments require
+/// private-network-capable ready nodes.
 async fn pick_node(
-    pool: &PgPool,
+    pool: &DatabaseConnection,
     workspace_id: &str,
     need: &Resources,
 ) -> Result<Option<NodeCapacity>> {
-    let rows: Vec<NodeCapacity> = sqlx::query_as(
+    let rows: Vec<NodeCapacity> = crate::db::query_as(
         "SELECT n.id, n.provider, n.total_cpu_millis, n.total_memory_mb, n.total_disk_mb, \
                 COALESCE(SUM(a.cpu_millis), 0)::bigint AS used_cpu_millis, \
                 COALESCE(SUM(a.memory_mb), 0)::bigint AS used_memory_mb, \
@@ -589,6 +607,9 @@ async fn pick_node(
          FROM nodes n \
          LEFT JOIN node_allocations a ON a.node_id = n.id \
          WHERE n.workspace_id = $1 AND n.status = 'ready' \
+           AND n.private_network_capable = TRUE \
+           AND n.wireguard_public_key IS NOT NULL \
+           AND n.wireguard_mesh_ip IS NOT NULL \
          GROUP BY n.id \
          ORDER BY n.created_at ASC",
     )
@@ -619,22 +640,23 @@ async fn pick_node(
 }
 
 async fn pick_preferred_node_for_domains(
-    pool: &PgPool,
+    pool: &DatabaseConnection,
     service_id: &str,
     deployment_id: &str,
     workspace_id: &str,
     need: &Resources,
 ) -> Result<Option<NodeCapacity>> {
-    let has_domains: Option<(bool,)> =
-        sqlx::query_as("SELECT EXISTS(SELECT 1 FROM service_domains WHERE service_id = $1)")
-            .bind(service_id)
-            .fetch_optional(pool)
-            .await?;
+    let has_domains: Option<(bool,)> = crate::db::query_tuple(
+        "SELECT EXISTS(SELECT 1 FROM service_domains WHERE service_id = $1)",
+    )
+    .bind(service_id)
+    .fetch_optional(pool)
+    .await?;
     if !has_domains.map(|(v,)| v).unwrap_or(false) {
         return Ok(None);
     }
 
-    let preferred_node: Option<(String,)> = sqlx::query_as(
+    let preferred_node: Option<(String,)> = crate::db::query_tuple(
         "SELECT d.node_id \
          FROM deployments d \
          WHERE d.service_id = $1 \
@@ -653,7 +675,7 @@ async fn pick_preferred_node_for_domains(
         return Ok(None);
     };
 
-    let row: Option<NodeCapacity> = sqlx::query_as(
+    let row: Option<NodeCapacity> = crate::db::query_as(
         "SELECT n.id, n.provider, n.total_cpu_millis, n.total_memory_mb, n.total_disk_mb, \
                 COALESCE(SUM(a.cpu_millis), 0)::bigint AS used_cpu_millis, \
                 COALESCE(SUM(a.memory_mb), 0)::bigint AS used_memory_mb, \
@@ -661,6 +683,9 @@ async fn pick_preferred_node_for_domains(
          FROM nodes n \
          LEFT JOIN node_allocations a ON a.node_id = n.id \
          WHERE n.workspace_id = $1 AND n.status = 'ready' AND n.id = $2 \
+           AND n.private_network_capable = TRUE \
+           AND n.wireguard_public_key IS NOT NULL \
+           AND n.wireguard_mesh_ip IS NOT NULL \
          GROUP BY n.id",
     )
     .bind(workspace_id)
@@ -684,14 +709,14 @@ async fn pick_preferred_node_for_domains(
 /// None if nothing fits — the caller triggers provisioning with a
 /// location override.
 async fn pick_required_node_for_volume(
-    pool: &PgPool,
+    pool: &DatabaseConnection,
     workspace_id: &str,
     need: &Resources,
     volume: &crate::volumes::VolumeRow,
 ) -> Result<Option<NodeCapacity>> {
     // Preferred: the volume's currently-attached node.
     if let Some(attached) = volume.attached_node_id.as_deref() {
-        let row: Option<NodeCapacity> = sqlx::query_as(
+        let row: Option<NodeCapacity> = crate::db::query_as(
             "SELECT n.id, n.provider, n.total_cpu_millis, n.total_memory_mb, n.total_disk_mb, \
                     COALESCE(SUM(a.cpu_millis), 0)::bigint AS used_cpu_millis, \
                     COALESCE(SUM(a.memory_mb), 0)::bigint AS used_memory_mb, \
@@ -699,6 +724,9 @@ async fn pick_required_node_for_volume(
              FROM nodes n \
              LEFT JOIN node_allocations a ON a.node_id = n.id \
              WHERE n.workspace_id = $1 AND n.id = $2 AND n.status = 'ready' \
+               AND n.private_network_capable = TRUE \
+               AND n.wireguard_public_key IS NOT NULL \
+               AND n.wireguard_mesh_ip IS NOT NULL \
              GROUP BY n.id",
         )
         .bind(workspace_id)
@@ -711,7 +739,7 @@ async fn pick_required_node_for_volume(
     }
 
     // Fallback: any ready node in the same Hetzner location.
-    let rows: Vec<NodeCapacity> = sqlx::query_as(
+    let rows: Vec<NodeCapacity> = crate::db::query_as(
         "SELECT n.id, n.provider, n.total_cpu_millis, n.total_memory_mb, n.total_disk_mb, \
                 COALESCE(SUM(a.cpu_millis), 0)::bigint AS used_cpu_millis, \
                 COALESCE(SUM(a.memory_mb), 0)::bigint AS used_memory_mb, \
@@ -719,6 +747,9 @@ async fn pick_required_node_for_volume(
          FROM nodes n \
          LEFT JOIN node_allocations a ON a.node_id = n.id \
          WHERE n.workspace_id = $1 AND n.status = 'ready' \
+           AND n.private_network_capable = TRUE \
+           AND n.wireguard_public_key IS NOT NULL \
+           AND n.wireguard_mesh_ip IS NOT NULL \
            AND n.hetzner_location = $2 \
          GROUP BY n.id \
          ORDER BY n.created_at ASC",
@@ -770,10 +801,12 @@ async fn ensure_volume_attached(
     // attached somewhere it shouldn't be, the subsequent attach call
     // surfaces that with a clear error.
     if volume.attached_node_id.is_some() {
-        sqlx::query("UPDATE volumes SET status = 'detaching', updated_at = now() WHERE id = $1")
-            .bind(&volume.id)
-            .execute(state.pool())
-            .await?;
+        crate::db::query(
+            "UPDATE volumes SET status = 'detaching', updated_at = now() WHERE id = $1",
+        )
+        .bind(&volume.id)
+        .execute(state.pool())
+        .await?;
         match client.detach_volume(hz_volume_id).await {
             Ok(action) => {
                 if let Err(e) = client
@@ -795,15 +828,17 @@ async fn ensure_volume_attached(
                 );
             }
         }
-        sqlx::query("UPDATE volumes SET attached_node_id = NULL, updated_at = now() WHERE id = $1")
-            .bind(&volume.id)
-            .execute(state.pool())
-            .await?;
+        crate::db::query(
+            "UPDATE volumes SET attached_node_id = NULL, updated_at = now() WHERE id = $1",
+        )
+        .bind(&volume.id)
+        .execute(state.pool())
+        .await?;
     }
 
     // Look up the target node's Hetzner server id.
     let server_id: Option<(Option<i64>,)> =
-        sqlx::query_as("SELECT hetzner_server_id FROM nodes WHERE id = $1")
+        crate::db::query_tuple("SELECT hetzner_server_id FROM nodes WHERE id = $1")
             .bind(target_node)
             .fetch_optional(state.pool())
             .await?;
@@ -820,7 +855,7 @@ async fn ensure_volume_attached(
         .await
         .map_err(|e| anyhow!("hetzner attach action: {e}"))?;
 
-    sqlx::query(
+    crate::db::query(
         "UPDATE volumes \
          SET attached_node_id = $1, status = 'attached', reason = NULL, updated_at = now() \
          WHERE id = $2",
@@ -873,7 +908,7 @@ async fn place_and_run(state: &AppState, p: &PendingDeployment) -> Result<()> {
                 }
                 ProvisionOutcome::Skipped(msg) => msg,
             };
-            sqlx::query(
+            crate::db::query(
                 "UPDATE deployments SET status = 'placing', reason = $1, updated_at = now() \
                  WHERE id = $2",
             )
@@ -894,9 +929,22 @@ async fn place_and_run(state: &AppState, p: &PendingDeployment) -> Result<()> {
             .context("attaching volume to target node")?;
     }
 
+    let private_network = crate::private_network::ensure_deployment_private_network(
+        state.pool(),
+        &p.project_id,
+        &node.id,
+        &p.service_slug,
+        &p.deployment_id,
+    )
+    .await
+    .map_err(|e| anyhow!("{e:?}"))?;
+    crate::private_network::sync_workspace(state.pool(), &p.workspace_id)
+        .await
+        .context("queueing private network sync")?;
+
     // Reserve capacity atomically.
-    let mut tx = state.pool().begin().await?;
-    sqlx::query(
+    let tx = state.pool().begin().await?;
+    crate::db::query(
         "INSERT INTO node_allocations (node_id, deployment_id, cpu_millis, memory_mb, disk_mb) \
          VALUES ($1, $2, $3, $4, $5) \
          ON CONFLICT (node_id, deployment_id) DO NOTHING",
@@ -906,22 +954,24 @@ async fn place_and_run(state: &AppState, p: &PendingDeployment) -> Result<()> {
     .bind(p.resources.cpu_millis as i32)
     .bind(p.resources.memory_mb as i32)
     .bind(p.resources.disk_mb as i32)
-    .execute(&mut *tx)
+    .execute(&tx)
     .await?;
 
-    sqlx::query(
+    crate::db::query(
         "UPDATE deployments SET node_id = $1, status = 'pulling', reason = NULL, updated_at = now() \
          WHERE id = $2",
     )
     .bind(&node.id)
     .bind(&p.deployment_id)
-    .execute(&mut *tx)
+    .execute(&tx)
     .await?;
     tx.commit().await?;
 
     // Only Hetzner agents run containers — local placements are intentionally gone.
     match node.provider.as_str() {
-        "hetzner" => dispatch_to_agent(state, &node.id, p, volume.as_ref()).await,
+        "hetzner" => {
+            dispatch_to_agent(state, &node.id, p, volume.as_ref(), Some(&private_network)).await
+        }
         other => Err(anyhow!("unsupported node provider: {other}")),
     }
 }
@@ -931,6 +981,7 @@ async fn dispatch_to_agent(
     node_id: &str,
     p: &PendingDeployment,
     volume: Option<&crate::volumes::VolumeRow>,
+    private_network: Option<&crate::private_network::DeploymentPrivateNetwork>,
 ) -> Result<()> {
     // If the service references a registry credential, decrypt it and thread
     // the (url, username, password) into the payload so bollard's create_image
@@ -980,15 +1031,25 @@ async fn dispatch_to_agent(
         None
     };
 
-    let payload = commands::pull_and_run_payload(
-        &p.image,
-        &json!(p.env_vars),
-        &json!(p.ports),
-        p.resources.cpu_millis,
-        p.resources.memory_mb,
-        registry_auth.as_ref(),
-        volume_mount.as_ref(),
-    );
+    let private_network_payload = private_network.map(|n| commands::PrivateNetwork {
+        network_name: &n.network_name,
+        ip_address: &n.ip_address,
+        dns_ip: &n.dns_ip,
+        aliases: &n.aliases,
+    });
+
+    let env_json = json!(p.env_vars);
+    let ports_json = json!(p.ports);
+    let payload = commands::pull_and_run_payload(&commands::PullAndRunPayload {
+        image: &p.image,
+        env: &env_json,
+        ports: &ports_json,
+        cpu_millis: p.resources.cpu_millis,
+        memory_mb: p.resources.memory_mb,
+        registry: registry_auth.as_ref(),
+        volume: volume_mount.as_ref(),
+        private_network: private_network_payload.as_ref(),
+    });
     commands::enqueue(
         state.pool(),
         node_id,
@@ -1019,14 +1080,14 @@ async fn try_provision_for(
     need: &Resources,
     location_override: Option<&str>,
 ) -> Result<ProvisionOutcome> {
-    #[derive(sqlx::FromRow)]
+    #[derive(sea_orm::FromQueryResult)]
     struct WsSettings {
         hetzner_location: String,
         max_nodes: i32,
         scheduler_paused_until: Option<DateTime<Utc>>,
     }
 
-    let ws: Option<WsSettings> = sqlx::query_as(
+    let ws: Option<WsSettings> = crate::db::query_as(
         "SELECT hetzner_location, max_nodes, scheduler_paused_until \
          FROM workspaces WHERE id = $1",
     )
@@ -1050,7 +1111,7 @@ async fn try_provision_for(
     }
 
     // Don't pile up parallel provisions — one at a time.
-    let (in_flight,): (i64,) = sqlx::query_as(
+    let (in_flight,): (i64,) = crate::db::query_tuple(
         "SELECT COUNT(*)::bigint FROM nodes \
          WHERE workspace_id = $1 AND provider = 'hetzner' \
                AND status IN ('provisioning', 'draining')",
@@ -1064,7 +1125,7 @@ async fn try_provision_for(
         )));
     }
 
-    let (current_nodes,): (i64,) = sqlx::query_as(
+    let (current_nodes,): (i64,) = crate::db::query_tuple(
         "SELECT COUNT(*)::bigint FROM nodes \
          WHERE workspace_id = $1 AND provider = 'hetzner' AND status <> 'terminated'",
     )
@@ -1115,8 +1176,8 @@ async fn try_provision_for(
 }
 
 /// Update `idle_since_at` on nodes: stamp when allocations first drop to zero; clear when non-zero.
-async fn refresh_idle_since(pool: &PgPool) -> Result<()> {
-    sqlx::query(
+async fn refresh_idle_since(pool: &DatabaseConnection) -> Result<()> {
+    crate::db::query(
         "UPDATE nodes SET idle_since_at = CASE \
             WHEN (SELECT COUNT(*) FROM node_allocations a WHERE a.node_id = nodes.id) = 0 \
                 AND idle_since_at IS NULL AND status = 'ready' \
@@ -1134,7 +1195,7 @@ async fn refresh_idle_since(pool: &PgPool) -> Result<()> {
 /// Terminate Hetzner nodes that have been idle longer than their workspace's
 /// `autoscale_idle_ttl_seconds` and aren't flagged `persistent`.
 async fn autoscale_down(state: &AppState) -> Result<()> {
-    #[derive(sqlx::FromRow)]
+    #[derive(sea_orm::FromQueryResult)]
     struct Candidate {
         id: String,
         workspace_id: String,
@@ -1143,7 +1204,7 @@ async fn autoscale_down(state: &AppState) -> Result<()> {
         ttl_seconds: i32,
     }
 
-    let rows: Vec<Candidate> = sqlx::query_as(
+    let rows: Vec<Candidate> = crate::db::query_as(
         "SELECT n.id, n.workspace_id, n.hetzner_server_id, n.idle_since_at, \
                 w.autoscale_idle_ttl_seconds AS ttl_seconds \
          FROM nodes n \
@@ -1184,7 +1245,7 @@ async fn autoscale_down(state: &AppState) -> Result<()> {
 /// Enqueue an `update_routes` command for the given node with the current
 /// hostname → deployment route set (derived from service_domains + running
 /// deployments).
-pub async fn push_routes_for_node(pool: &PgPool, node_id: &str) -> Result<()> {
+pub async fn push_routes_for_node(pool: &DatabaseConnection, node_id: &str) -> Result<()> {
     let routes = crate::domains::routes_for_node(pool, node_id).await?;
     let payload = json!({
         "routes": routes.iter().map(|r| json!({
@@ -1199,7 +1260,7 @@ pub async fn push_routes_for_node(pool: &PgPool, node_id: &str) -> Result<()> {
 }
 
 /// Push route updates to every node currently running a deployment of this service.
-pub async fn push_routes_for_service(pool: &PgPool, service_id: &str) -> Result<()> {
+pub async fn push_routes_for_service(pool: &DatabaseConnection, service_id: &str) -> Result<()> {
     let nodes = crate::domains::nodes_for_service(pool, service_id).await?;
     for node_id in nodes {
         push_routes_for_node(pool, &node_id).await?;

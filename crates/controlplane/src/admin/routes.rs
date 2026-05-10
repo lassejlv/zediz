@@ -31,7 +31,7 @@ async fn list_users(
 ) -> ApiResult<Json<Vec<AdminUser>>> {
     super::require_platform_admin(state.pool(), &auth.user_id).await?;
 
-    #[derive(sqlx::FromRow)]
+    #[derive(sea_orm::FromQueryResult)]
     struct Row {
         id: String,
         email: String,
@@ -41,7 +41,7 @@ async fn list_users(
         created_at: DateTime<Utc>,
     }
     // Pending first so the admin sees what needs attention at the top.
-    let rows: Vec<Row> = sqlx::query_as(
+    let rows: Vec<Row> = crate::db::query_as(
         "SELECT id, email, display_name, status, is_platform_admin, created_at \
          FROM users \
          ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, \
@@ -71,7 +71,7 @@ async fn approve_user(
 ) -> ApiResult<()> {
     super::require_platform_admin(state.pool(), &auth.user_id).await?;
 
-    sqlx::query("UPDATE users SET status = 'approved' WHERE id = $1")
+    crate::db::query("UPDATE users SET status = 'approved' WHERE id = $1")
         .bind(&user_id)
         .execute(state.pool())
         .await?;
@@ -87,11 +87,11 @@ async fn reject_user(
 
     // Flip status and nuke live sessions so the rejected user gets booted
     // on their next request instead of waiting for cookie expiry.
-    sqlx::query("UPDATE users SET status = 'rejected' WHERE id = $1")
+    crate::db::query("UPDATE users SET status = 'rejected' WHERE id = $1")
         .bind(&user_id)
         .execute(state.pool())
         .await?;
-    sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+    crate::db::query("DELETE FROM sessions WHERE user_id = $1")
         .bind(&user_id)
         .execute(state.pool())
         .await?;

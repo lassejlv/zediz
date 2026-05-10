@@ -1,8 +1,8 @@
 pub mod routes;
 
 use anyhow::anyhow;
-use sqlx::PgPool;
 use driftbase_common::Id;
+use sea_orm::DatabaseConnection;
 
 use crate::error::{ApiError, ApiResult};
 
@@ -13,9 +13,9 @@ pub struct ProjectContext {
     pub slug: String,
 }
 
-pub async fn resolve(pool: &PgPool, project_id: &str) -> ApiResult<ProjectContext> {
+pub async fn resolve(pool: &DatabaseConnection, project_id: &str) -> ApiResult<ProjectContext> {
     let row: Option<(String, String, String)> =
-        sqlx::query_as("SELECT id, workspace_id, slug FROM projects WHERE id = $1")
+        crate::db::query_tuple("SELECT id, workspace_id, slug FROM projects WHERE id = $1")
             .bind(project_id)
             .fetch_optional(pool)
             .await?;

@@ -3,9 +3,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{DateTime, Utc};
+use driftbase_common::Id;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
-use driftbase_common::Id;
 
 use crate::auth::{extractor::AuthUser, password, session};
 use crate::error::{ApiError, ApiResult};
@@ -67,7 +67,7 @@ async fn signup(
     let password_hash = password::hash(&req.password).map_err(ApiError::Internal)?;
     let user_id = Id::new();
 
-    let row: Option<(String,)> = sqlx::query_as("SELECT id FROM users WHERE email = $1")
+    let row: Option<(String,)> = crate::db::query_tuple("SELECT id FROM users WHERE email = $1")
         .bind(&email_norm)
         .fetch_optional(state.pool())
         .await?;
@@ -77,12 +77,12 @@ async fn signup(
 
     // First signup on this instance becomes the platform admin and is
     // auto-approved so the installer isn't locked out of their own box.
-    let existing_count: (i64,) = sqlx::query_as("SELECT COUNT(*)::bigint FROM users")
+    let existing_count: (i64,) = crate::db::query_tuple("SELECT COUNT(*)::bigint FROM users")
         .fetch_one(state.pool())
         .await?;
     let is_first_user = existing_count.0 == 0;
 
-    sqlx::query(
+    crate::db::query(
         "INSERT INTO users (id, email, password_hash, display_name, status, is_platform_admin) \
          VALUES ($1, $2, $3, $4, $5, $6)",
     )
@@ -106,7 +106,7 @@ async fn signup(
             .is_ok()
         {
             approved_via_invite = true;
-            sqlx::query("UPDATE users SET status = 'approved' WHERE id = $1")
+            crate::db::query("UPDATE users SET status = 'approved' WHERE id = $1")
                 .bind(user_id.to_string())
                 .execute(state.pool())
                 .await?;
@@ -143,7 +143,7 @@ async fn signup(
     Ok((jar, Json(SignupResponse::Active(me))))
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sea_orm::FromQueryResult)]
 struct UserRow {
     id: String,
     email: String,
@@ -160,7 +160,7 @@ async fn login(
     Json(req): Json<LoginRequest>,
 ) -> ApiResult<(CookieJar, Json<MeResponse>)> {
     let email_norm = req.email.trim().to_lowercase();
-    let row: Option<UserRow> = sqlx::query_as(
+    let row: Option<UserRow> = crate::db::query_as(
         "SELECT id, email, password_hash, display_name, created_at, status, \
                 is_platform_admin \
          FROM users WHERE email = $1",
@@ -229,7 +229,7 @@ async fn logout(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Cook
     Ok(jar)
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sea_orm::FromQueryResult)]
 struct MeRow {
     id: String,
     email: String,
@@ -240,7 +240,7 @@ struct MeRow {
 }
 
 async fn me(State(state): State<AppState>, auth: AuthUser) -> ApiResult<Json<MeResponse>> {
-    let row: Option<MeRow> = sqlx::query_as(
+    let row: Option<MeRow> = crate::db::query_as(
         "SELECT id, email, display_name, created_at, status, is_platform_admin \
          FROM users WHERE id = $1",
     )

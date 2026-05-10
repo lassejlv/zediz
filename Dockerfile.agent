@@ -29,6 +29,7 @@ RUN apt-get update \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
         docker-ce-cli docker-buildx-plugin \
+        iproute2 iptables wireguard-tools \
  && rm -rf /var/lib/apt/lists/*
 # Railpack — used when a git service opts into `builder=railpack` instead of a
 # hand-written Dockerfile. The install script drops a single statically-linked

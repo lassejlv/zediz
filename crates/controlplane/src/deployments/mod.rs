@@ -1,10 +1,10 @@
 pub mod routes;
 
 use chrono::{DateTime, Utc};
+use driftbase_common::Id;
+use sea_orm::DatabaseConnection;
 use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
-use sqlx::PgPool;
-use driftbase_common::Id;
 
 use crate::error::{ApiError, ApiResult};
 use crate::services::routes::ServiceSummary;
@@ -26,7 +26,7 @@ pub struct DeploymentSummary {
     pub runtime_metrics: Option<JsonValue>,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sea_orm::FromQueryResult)]
 pub struct DeploymentRow {
     pub id: String,
     pub service_id: String,
@@ -79,13 +79,13 @@ impl TryFrom<DeploymentRow> for DeploymentSummary {
 }
 
 pub async fn create_deployment(
-    pool: &PgPool,
+    pool: &DatabaseConnection,
     service: &ServiceSummary,
     image: &str,
     _workspace_id: &Id,
 ) -> ApiResult<DeploymentSummary> {
     let id = Id::new();
-    let row: DeploymentRow = sqlx::query_as(
+    let row: DeploymentRow = crate::db::query_as(
         "INSERT INTO deployments (id, service_id, status, image_ref, env_vars, ports, resources) \
          VALUES ($1, $2, 'pending', $3, $4, $5, $6) \
          RETURNING id, service_id, node_id, status, image_ref, env_vars, ports, resources, \
@@ -104,10 +104,10 @@ pub async fn create_deployment(
 }
 
 pub async fn list_for_service(
-    pool: &PgPool,
+    pool: &DatabaseConnection,
     service_id: &str,
 ) -> ApiResult<Vec<DeploymentSummary>> {
-    let rows: Vec<DeploymentRow> = sqlx::query_as(
+    let rows: Vec<DeploymentRow> = crate::db::query_as(
         "SELECT id, service_id, node_id, status, image_ref, env_vars, ports, resources, \
                 container_id, reason, created_at, started_at, stopped_at, updated_at, runtime_metrics \
          FROM deployments WHERE service_id = $1 ORDER BY created_at DESC",
@@ -121,8 +121,11 @@ pub async fn list_for_service(
         .collect::<Result<Vec<_>, _>>()
 }
 
-pub async fn fetch_by_id(pool: &PgPool, deployment_id: &str) -> ApiResult<DeploymentRow> {
-    let row: Option<DeploymentRow> = sqlx::query_as(
+pub async fn fetch_by_id(
+    pool: &DatabaseConnection,
+    deployment_id: &str,
+) -> ApiResult<DeploymentRow> {
+    let row: Option<DeploymentRow> = crate::db::query_as(
         "SELECT id, service_id, node_id, status, image_ref, env_vars, ports, resources, \
                 container_id, reason, created_at, started_at, stopped_at, updated_at, runtime_metrics \
          FROM deployments WHERE id = $1",
@@ -140,14 +143,14 @@ pub async fn fetch_by_id(pool: &PgPool, deployment_id: &str) -> ApiResult<Deploy
 /// This is what makes a redeploy rolling: the old container keeps serving
 /// traffic until the new one reaches `running`; only then do we cut over.
 pub async fn retire_superseded_running(
-    pool: &PgPool,
+    pool: &DatabaseConnection,
     service_id: &str,
     winner_deployment_id: &str,
 ) -> ApiResult<Vec<String>> {
     use crate::agent::commands::{self, CommandKind};
     use std::collections::BTreeSet;
 
-    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+    let rows: Vec<(String, Option<String>)> = crate::db::query_tuple(
         "SELECT id, node_id FROM deployments \
          WHERE service_id = $1 AND status = 'running' AND id <> $2",
     )
@@ -169,15 +172,16 @@ pub async fn retire_superseded_running(
             .await;
             nodes.insert(node_id.clone());
         }
-        sqlx::query(
+        crate::db::query(
             "UPDATE deployments SET status = 'stopped', stopped_at = now(), \
-                                    reason = 'replaced by new deployment', updated_at = now() \
+                                    reason = 'replaced by new deployment', \
+                                    private_ipv4 = NULL, updated_at = now() \
              WHERE id = $1",
         )
         .bind(&deployment_id)
         .execute(pool)
         .await?;
-        sqlx::query("DELETE FROM node_allocations WHERE deployment_id = $1")
+        crate::db::query("DELETE FROM node_allocations WHERE deployment_id = $1")
             .bind(&deployment_id)
             .execute(pool)
             .await?;
@@ -188,11 +192,11 @@ pub async fn retire_superseded_running(
 /// Resolve `(workspace_id, service_id, project_id)` for a deployment, enforcing the
 /// caller is at least a viewer in the owning workspace.
 pub async fn authorize(
-    pool: &PgPool,
+    pool: &DatabaseConnection,
     deployment_id: &str,
     user_id: &Id,
 ) -> ApiResult<DeploymentRow> {
-    let row: Option<(String, String)> = sqlx::query_as(
+    let row: Option<(String, String)> = crate::db::query_tuple(
         "SELECT w.id, m.role \
          FROM deployments d \
          JOIN services s ON s.id = d.service_id \

@@ -1,9 +1,9 @@
 pub mod routes;
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
-use sqlx::PgPool;
 use driftbase_common::Id;
+use sea_orm::DatabaseConnection;
+use serde::Serialize;
 
 use crate::error::{ApiError, ApiResult};
 
@@ -24,7 +24,7 @@ pub struct BuildSummary {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sea_orm::FromQueryResult)]
 pub struct BuildRow {
     pub id: String,
     pub service_id: String,
@@ -77,9 +77,13 @@ impl TryFrom<BuildRow> for BuildSummary {
 }
 
 /// Insert a `queued` build row for `service_id` + `deployment_id` and return its id.
-pub async fn create_queued(pool: &PgPool, service_id: &str, deployment_id: &str) -> ApiResult<Id> {
+pub async fn create_queued(
+    pool: &DatabaseConnection,
+    service_id: &str,
+    deployment_id: &str,
+) -> ApiResult<Id> {
     let id = Id::new();
-    sqlx::query(
+    crate::db::query(
         "INSERT INTO builds (id, service_id, deployment_id, status) \
          VALUES ($1, $2, $3, 'queued')",
     )
@@ -91,8 +95,11 @@ pub async fn create_queued(pool: &PgPool, service_id: &str, deployment_id: &str)
     Ok(id)
 }
 
-pub async fn list_for_service(pool: &PgPool, service_id: &str) -> ApiResult<Vec<BuildSummary>> {
-    let rows: Vec<BuildRow> = sqlx::query_as(
+pub async fn list_for_service(
+    pool: &DatabaseConnection,
+    service_id: &str,
+) -> ApiResult<Vec<BuildSummary>> {
+    let rows: Vec<BuildRow> = crate::db::query_as(
         "SELECT id, service_id, deployment_id, node_id, status, git_commit, image_digest, \
                 image_tag, reason, created_at, started_at, finished_at, updated_at \
          FROM builds WHERE service_id = $1 ORDER BY created_at DESC LIMIT 50",
@@ -105,8 +112,8 @@ pub async fn list_for_service(pool: &PgPool, service_id: &str) -> ApiResult<Vec<
         .collect::<Result<Vec<_>, _>>()
 }
 
-pub async fn fetch_by_id(pool: &PgPool, build_id: &str) -> ApiResult<BuildRow> {
-    let row: Option<BuildRow> = sqlx::query_as(
+pub async fn fetch_by_id(pool: &DatabaseConnection, build_id: &str) -> ApiResult<BuildRow> {
+    let row: Option<BuildRow> = crate::db::query_as(
         "SELECT id, service_id, deployment_id, node_id, status, git_commit, image_digest, \
                 image_tag, reason, created_at, started_at, finished_at, updated_at \
          FROM builds WHERE id = $1",
