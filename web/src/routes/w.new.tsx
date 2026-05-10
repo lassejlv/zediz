@@ -25,7 +25,10 @@ function NewWorkspacePage() {
     setError(null);
     try {
       const ws = await create.mutateAsync({ slug, name });
-      await navigate({ to: '/w/$workspaceSlug', params: { workspaceSlug: ws.slug } });
+      await navigate({
+        to: '/w/$workspaceSlug/onboarding',
+        params: { workspaceSlug: ws.slug },
+      });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Something went wrong');
     }

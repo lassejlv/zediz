@@ -6,7 +6,15 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from 'react';
-import { Check, Copy, ExternalLink, Info, Plus, Trash2, X } from 'lucide-react';
+import {
+  Check,
+  Copy,
+  ExternalLink,
+  Info,
+  Plus,
+  Trash2,
+  X,
+} from 'lucide-react';
 import {
   useAddDomain,
   useDeleteDomain,
@@ -243,6 +251,7 @@ function DnsRecordPreview({
 }) {
   const recordName = dnsRecordName(hostname);
   const ip = nodeIp ?? '—';
+  const cloudflare = useCloudflareDetection(hostname);
 
   return (
     <div className="mt-5 rounded-md border border-[var(--color-border)] bg-black/[0.02] p-3 dark:bg-white/[0.02]">
@@ -261,6 +270,9 @@ function DnsRecordPreview({
           ? 'Caddy issues TLS on the first HTTPS request. Propagation usually takes a minute.'
           : 'Deploy the service first — a node IP is needed before DNS can point anywhere.'}
       </p>
+      {cloudflare.detected ? (
+        <CloudflareConnect apex={cloudflare.apex} />
+      ) : null}
     </div>
   );
 }
@@ -367,13 +379,19 @@ function PendingHelp({
 }) {
   const name = dnsRecordName(hostname);
   const ip = nodeIp ?? '<your node IP>';
+  const cloudflare = useCloudflareDetection(hostname);
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--color-muted)]">
-      <span>Point DNS at this node, then HTTPS issues the cert:</span>
-      <span className="inline-flex items-center gap-1.5 rounded border border-[var(--color-border)] bg-black/[0.03] px-1.5 py-0.5 font-mono text-[var(--color-fg)] dark:bg-white/[0.03]">
-        A {name} → {ip}
-      </span>
-      {nodeIp ? <CopyBtn value={nodeIp} /> : null}
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--color-muted)]">
+        <span>Point DNS at this node, then HTTPS issues the cert:</span>
+        <span className="inline-flex items-center gap-1.5 rounded border border-[var(--color-border)] bg-black/[0.03] px-1.5 py-0.5 font-mono text-[var(--color-fg)] dark:bg-white/[0.03]">
+          A {name} → {ip}
+        </span>
+        {nodeIp ? <CopyBtn value={nodeIp} /> : null}
+      </div>
+      {cloudflare.detected ? (
+        <CloudflareConnect apex={cloudflare.apex} />
+      ) : null}
     </div>
   );
 }
@@ -559,4 +577,94 @@ function dnsRecordName(hostname: string): string {
   const parts = hostname.split('.');
   if (parts.length <= 2) return '@';
   return parts.slice(0, parts.length - 2).join('.');
+}
+
+/* ---------- cloudflare detection ---------- */
+
+/**
+ * Probes Cloudflare's DNS-over-HTTPS for the apex domain's NS records.
+ * Cloudflare-managed zones return nameservers under `*.ns.cloudflare.com`.
+ */
+function useCloudflareDetection(hostname: string): {
+  detected: boolean;
+  apex: string;
+} {
+  const apex = apexDomain(hostname);
+  const query = useQuery({
+    queryKey: ['cloudflare-ns', apex] as const,
+    enabled: apex.length > 0,
+    staleTime: 5 * 60_000,
+    retry: false,
+    queryFn: async ({ signal }) => {
+      const res = await fetch(
+        `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(apex)}&type=NS`,
+        { headers: { Accept: 'application/dns-json' }, signal },
+      );
+      if (!res.ok) return false;
+      const data = (await res.json()) as { Answer?: Array<{ data?: string }> };
+      return (data.Answer ?? []).some(
+        (a) =>
+          typeof a.data === 'string' &&
+          a.data.toLowerCase().includes('.ns.cloudflare.com'),
+      );
+    },
+  });
+  return { detected: query.data === true, apex };
+}
+
+function apexDomain(host: string): string {
+  const trimmed = host.trim().toLowerCase().replace(/\.+$/, '');
+  if (!trimmed) return '';
+  const parts = trimmed.split('.').filter(Boolean);
+  if (parts.length < 2) return '';
+  return parts.slice(-2).join('.');
+}
+
+function CloudflareConnect({ apex }: { apex: string }) {
+  const url = `https://dash.cloudflare.com/?to=/:account/${encodeURIComponent(apex)}/dns/records`;
+  return (
+    <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-xs">
+      <div className="flex min-w-0 items-center gap-2">
+        <CloudflareMark className="h-4 w-auto shrink-0" />
+        <span className="text-[var(--color-fg)]">
+          Cloudflare detected on{' '}
+          <span className="font-mono">{apex}</span>
+        </span>
+      </div>
+      <a
+        href={url}
+        target="_blank"
+        rel="noreferrer"
+        className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 font-medium text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
+      >
+        Connect
+        <ExternalLink className="h-3 w-3" />
+      </a>
+    </div>
+  );
+}
+
+function CloudflareMark({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 256 116"
+      xmlns="http://www.w3.org/2000/svg"
+      preserveAspectRatio="xMidYMid"
+      aria-label="Cloudflare"
+      className={className}
+    >
+      <path
+        fill="#FFF"
+        d="m202.357 49.394-5.311-2.124C172.085 103.434 72.786 69.289 66.81 85.997c-.996 11.286 54.227 2.146 93.706 4.059 12.039.583 18.076 9.671 12.964 24.484l10.069.031c11.615-36.209 48.683-17.73 50.232-29.68-2.545-7.857-42.601 0-31.425-35.497Z"
+      />
+      <path
+        fill="#F4811F"
+        d="M176.332 108.348c1.593-5.31 1.062-10.622-1.593-13.809-2.656-3.187-6.374-5.31-11.154-5.842L71.17 87.634c-.531 0-1.062-.53-1.593-.53-.531-.532-.531-1.063 0-1.594.531-1.062 1.062-1.594 2.124-1.594l92.946-1.062c11.154-.53 22.838-9.56 27.087-20.182l5.312-13.809c0-.532.531-1.063 0-1.594C191.203 20.182 166.772 0 138.091 0 111.535 0 88.697 16.995 80.73 40.896c-5.311-3.718-11.684-5.843-19.12-5.31-12.747 1.061-22.838 11.683-24.432 24.43-.531 3.187 0 6.374.532 9.56C16.996 70.107 0 87.103 0 108.348c0 2.124 0 3.718.531 5.842 0 1.063 1.062 1.594 1.594 1.594h170.489c1.062 0 2.125-.53 2.125-1.594l1.593-5.842Z"
+      />
+      <path
+        fill="#FAAD3F"
+        d="M205.544 48.863h-2.656c-.531 0-1.062.53-1.593 1.062l-3.718 12.747c-1.593 5.31-1.062 10.623 1.594 13.809 2.655 3.187 6.373 5.31 11.153 5.843l19.652 1.062c.53 0 1.062.53 1.593.53.53.532.53 1.063 0 1.594-.531 1.063-1.062 1.594-2.125 1.594l-20.182 1.062c-11.154.53-22.838 9.56-27.087 20.182l-1.063 4.78c-.531.532 0 1.594 1.063 1.594h70.108c1.062 0 1.593-.531 1.593-1.593 1.062-4.25 2.124-9.03 2.124-13.81 0-27.618-22.838-50.456-50.456-50.456"
+      />
+    </svg>
+  );
 }
