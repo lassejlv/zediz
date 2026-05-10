@@ -14,6 +14,9 @@ package_update: true
 packages:
   - ca-certificates
   - curl
+  - iproute2
+  - iptables
+  - wireguard-tools
 write_files:
   - path: /etc/driftbase/agent.env
     owner: root:root
@@ -24,6 +27,7 @@ write_files:
       DRIFTBASE_NODE_ID={node_id}
       DRIFTBASE_WORKSPACE_ID={workspace_id}
       DRIFTBASE_AGENT_IMAGE={agent_image}
+      DRIFTBASE_PRIVATE_NETWORK_DIR=/var/lib/driftbase/network
   - path: /etc/systemd/system/driftbase-agent.service
     owner: root:root
     permissions: '0644'
@@ -36,9 +40,11 @@ write_files:
 
       [Service]
       Type=simple
+      EnvironmentFile=/etc/driftbase/agent.env
       ExecStartPre=-/usr/bin/docker rm -f driftbase-agent
-      ExecStartPre=/usr/bin/docker pull {agent_image}
+      ExecStartPre=/usr/bin/docker pull $DRIFTBASE_AGENT_IMAGE
       ExecStartPre=/usr/bin/mkdir -p /var/lib/driftbase/volumes
+      ExecStartPre=/usr/bin/mkdir -p /var/lib/driftbase/network
       # rshared propagation requires the host parent to itself be a
       # shared mount. Dirs under /var are private by default, so bind
       # the volumes dir over itself and flip it shared before the agent
@@ -55,10 +61,13 @@ write_files:
         --env-file /etc/driftbase/agent.env \
         -v /var/run/docker.sock:/var/run/docker.sock \
         -v /dev:/dev \
+        -v /etc/driftbase:/etc/driftbase \
         -v /var/lib/driftbase/volumes:/var/lib/driftbase/volumes:rshared \
+        -v /var/lib/driftbase/network:/var/lib/driftbase/network \
         --cap-add=SYS_ADMIN \
+        --cap-add=NET_ADMIN \
         --security-opt apparmor=unconfined \
-        {agent_image}
+        $DRIFTBASE_AGENT_IMAGE
       ExecStop=/usr/bin/docker stop driftbase-agent
       Restart=always
       RestartSec=5s

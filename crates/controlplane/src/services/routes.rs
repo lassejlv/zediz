@@ -45,6 +45,7 @@ pub struct ServiceSummary {
     pub id: Id,
     pub slug: String,
     pub name: String,
+    pub private_hostname: String,
     pub source: String,
     pub image_ref: Option<String>,
     pub env_vars: EnvVars,
@@ -65,7 +66,7 @@ pub struct ServiceSummary {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sea_orm::FromQueryResult)]
 struct ServiceRow {
     id: String,
     slug: String,
@@ -93,6 +94,7 @@ struct ServiceRow {
 impl TryFrom<ServiceRow> for ServiceSummary {
     type Error = ApiError;
     fn try_from(r: ServiceRow) -> Result<Self, ApiError> {
+        let private_hostname = crate::private_network::private_hostname(&r.slug);
         Ok(Self {
             id: r
                 .id
@@ -100,6 +102,7 @@ impl TryFrom<ServiceRow> for ServiceSummary {
                 .map_err(|e| ApiError::Internal(anyhow::anyhow!("{e}")))?,
             slug: r.slug,
             name: r.name,
+            private_hostname,
             source: r.source,
             image_ref: r.image_ref,
             env_vars: serde_json::from_value(r.env_vars)
@@ -134,12 +137,12 @@ impl TryFrom<ServiceRow> for ServiceSummary {
 }
 
 async fn resolve_project(
-    pool: &sqlx::PgPool,
+    pool: &sea_orm::DatabaseConnection,
     workspace_id: &Id,
     project_slug: &str,
 ) -> ApiResult<Id> {
     let row: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM projects WHERE workspace_id = $1 AND slug = $2")
+        crate::db::query_tuple("SELECT id FROM projects WHERE workspace_id = $1 AND slug = $2")
             .bind(workspace_id.to_string())
             .bind(project_slug)
             .fetch_optional(pool)
@@ -157,7 +160,7 @@ async fn list(
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
     let project_id = resolve_project(state.pool(), &ctx.workspace_id, &project_slug).await?;
 
-    let rows: Vec<ServiceRow> = sqlx::query_as(&format!(
+    let rows: Vec<ServiceRow> = crate::db::query_as(format!(
         "SELECT {cols} FROM services WHERE project_id = $1 ORDER BY created_at DESC",
         cols = SERVICE_COLUMNS,
     ))
@@ -339,7 +342,7 @@ async fn create(
          RETURNING {cols}",
         cols = SERVICE_COLUMNS,
     );
-    let inserted: Option<ServiceRow> = sqlx::query_as(&insert_sql)
+    let inserted: Option<ServiceRow> = crate::db::query_as(&insert_sql)
         .bind(id.to_string())
         .bind(project_id.to_string())
         .bind(&service_slug)
@@ -374,7 +377,7 @@ async fn show(
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
     let project_id = resolve_project(state.pool(), &ctx.workspace_id, &project_slug).await?;
 
-    let row: Option<ServiceRow> = sqlx::query_as(&format!(
+    let row: Option<ServiceRow> = crate::db::query_as(format!(
         "SELECT {cols} FROM services WHERE project_id = $1 AND slug = $2",
         cols = SERVICE_COLUMNS,
     ))
@@ -451,7 +454,7 @@ async fn update(
 
     let registry_repo = normalize_registry_repo(req.registry_repo);
 
-    let row: ServiceRow = sqlx::query_as(&format!(
+    let row: ServiceRow = crate::db::query_as(format!(
         "UPDATE services SET \
             name = COALESCE($1, name), \
             image_ref = COALESCE($2, image_ref), \
@@ -511,7 +514,7 @@ async fn delete(
     let project_id = resolve_project(state.pool(), &ctx.workspace_id, &project_slug).await?;
 
     let service_id: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM services WHERE project_id = $1 AND slug = $2")
+        crate::db::query_tuple("SELECT id FROM services WHERE project_id = $1 AND slug = $2")
             .bind(project_id.to_string())
             .bind(&service_slug)
             .fetch_optional(state.pool())
@@ -530,13 +533,18 @@ async fn delete(
         .await?;
     }
 
-    let res = sqlx::query("DELETE FROM services WHERE project_id = $1 AND slug = $2")
+    let res = crate::db::query("DELETE FROM services WHERE project_id = $1 AND slug = $2")
         .bind(project_id.to_string())
         .bind(&service_slug)
         .execute(state.pool())
         .await?;
     if res.rows_affected() == 0 {
         return Err(ApiError::NotFound);
+    }
+    if let Err(e) =
+        crate::private_network::sync_project(state.pool(), &project_id.to_string()).await
+    {
+        tracing::warn!(error = ?e, project = %project_id, "sync private network after service delete");
     }
     Ok(())
 }
@@ -550,7 +558,7 @@ async fn deploy(
     membership::require(&ctx, Role::Member)?;
     let project_id = resolve_project(state.pool(), &ctx.workspace_id, &project_slug).await?;
 
-    let service: Option<ServiceRow> = sqlx::query_as(&format!(
+    let service: Option<ServiceRow> = crate::db::query_as(format!(
         "SELECT {cols} FROM services WHERE project_id = $1 AND slug = $2",
         cols = SERVICE_COLUMNS,
     ))
@@ -607,7 +615,7 @@ async fn deploy(
                 &ctx.workspace_id,
             )
             .await?;
-            sqlx::query(
+            crate::db::query(
                 "UPDATE deployments SET status = 'building', reason = 'awaiting build', \
                                         updated_at = now() \
                  WHERE id = $1",
@@ -637,11 +645,11 @@ async fn deploy(
 /// container. Enqueued Stop runs before the new PullAndRun on the agent
 /// because commands are dispatched in `created_at` order.
 async fn cancel_pre_deploy(
-    pool: &sqlx::PgPool,
+    pool: &sea_orm::DatabaseConnection,
     service_id: &str,
     include_running: bool,
 ) -> ApiResult<()> {
-    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+    let rows: Vec<(String, Option<String>)> = crate::db::query_tuple(
         "SELECT id, node_id FROM deployments \
          WHERE service_id = $1 \
            AND (status IN ('pending','building','placing','pulling','starting','failing') \
@@ -664,7 +672,7 @@ async fn cancel_pre_deploy(
             )
             .await;
         }
-        sqlx::query(
+        crate::db::query(
             "UPDATE deployments SET status = 'stopped', stopped_at = now(), \
                                     reason = 'replaced by new deployment', updated_at = now() \
              WHERE id = $1",
@@ -672,12 +680,12 @@ async fn cancel_pre_deploy(
         .bind(&deployment_id)
         .execute(pool)
         .await?;
-        sqlx::query("DELETE FROM node_allocations WHERE deployment_id = $1")
+        crate::db::query("DELETE FROM node_allocations WHERE deployment_id = $1")
             .bind(&deployment_id)
             .execute(pool)
             .await?;
         // Abandon any in-flight builds tied to this deployment.
-        sqlx::query(
+        crate::db::query(
             "UPDATE builds SET status = 'cancelled', \
                                reason = COALESCE(reason, 'superseded'), \
                                finished_at = now(), updated_at = now() \
@@ -699,7 +707,7 @@ async fn list_deployments(
     let project_id = resolve_project(state.pool(), &ctx.workspace_id, &project_slug).await?;
 
     let service_id: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM services WHERE project_id = $1 AND slug = $2")
+        crate::db::query_tuple("SELECT id FROM services WHERE project_id = $1 AND slug = $2")
             .bind(project_id.to_string())
             .bind(&service_slug)
             .fetch_optional(state.pool())

@@ -1,9 +1,9 @@
 use std::fmt;
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
 use driftbase_common::Id;
+use sea_orm::DatabaseConnection;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{ApiError, ApiResult};
 
@@ -67,8 +67,12 @@ pub struct WorkspaceContext {
     pub role: Role,
 }
 
-pub async fn resolve(pool: &PgPool, slug: &str, user_id: &Id) -> ApiResult<WorkspaceContext> {
-    let row: Option<(String, String, String)> = sqlx::query_as(
+pub async fn resolve(
+    pool: &DatabaseConnection,
+    slug: &str,
+    user_id: &Id,
+) -> ApiResult<WorkspaceContext> {
+    let row: Option<(String, String, String)> = crate::db::query_tuple(
         "SELECT w.id, w.slug, m.role \
          FROM workspaces w \
          JOIN workspace_members m ON m.workspace_id = w.id \

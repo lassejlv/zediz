@@ -1,8 +1,14 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, MoreHorizontal, Server } from 'lucide-react';
+import { AlertTriangle, Download, MoreHorizontal, RefreshCw, Server } from 'lucide-react';
 import { useRef, useEffect, useState } from 'react';
-import { nodesQuery, useDeleteNode, useDrainNode } from '@/lib/nodes';
+import {
+  nodesQuery,
+  useCheckNodeAgentUpdate,
+  useDeleteNode,
+  useDrainNode,
+  useUpdateNodeAgent,
+} from '@/lib/nodes';
 import { canAdmin, workspaceQuery } from '@/lib/workspaces';
 import {
   Button,
@@ -28,6 +34,8 @@ function NodesPage() {
   const nodes = useQuery({ ...nodesQuery(workspaceSlug), refetchInterval: 5000 });
   const drain = useDrainNode(workspaceSlug);
   const del = useDeleteNode(workspaceSlug);
+  const checkAgentUpdate = useCheckNodeAgentUpdate(workspaceSlug);
+  const updateAgent = useUpdateNodeAgent(workspaceSlug);
 
   const canManage = canAdmin(workspace.data);
 
@@ -58,8 +66,12 @@ function NodesPage() {
               canManage={canManage && n.provider === 'hetzner'}
               onDrain={() => drain.mutate(n.id)}
               onDelete={() => del.mutate({ nodeId: n.id, force: true })}
+              onCheckAgentUpdate={() => checkAgentUpdate.mutate(n.id)}
+              onUpdateAgent={() => updateAgent.mutate(n.id)}
               drainPending={drain.isPending && drain.variables === n.id}
               deletePending={del.isPending && del.variables?.nodeId === n.id}
+              checkAgentPending={checkAgentUpdate.isPending && checkAgentUpdate.variables === n.id}
+              updateAgentPending={updateAgent.isPending && updateAgent.variables === n.id}
             />
           ))}
         </Stack>
@@ -91,15 +103,23 @@ function NodeCard({
   canManage,
   onDrain,
   onDelete,
+  onCheckAgentUpdate,
+  onUpdateAgent,
   drainPending,
   deletePending,
+  checkAgentPending,
+  updateAgentPending,
 }: {
   node: NodeSummary;
   canManage: boolean;
   onDrain: () => void;
   onDelete: () => void;
+  onCheckAgentUpdate: () => void;
+  onUpdateAgent: () => void;
   drainPending: boolean;
   deletePending: boolean;
+  checkAgentPending: boolean;
+  updateAgentPending: boolean;
 }) {
   const [confirming, setConfirming] = useState<ConfirmAction>(null);
 
@@ -173,6 +193,15 @@ function NodeCard({
         />
       </div>
 
+      <AgentUpdatePanel
+        node={n}
+        canManage={canManage}
+        onCheck={onCheckAgentUpdate}
+        onUpdate={onUpdateAgent}
+        checkPending={checkAgentPending}
+        updatePending={updateAgentPending}
+      />
+
       {n.workloads.length > 0 ? (
         <div className="border-t border-[var(--color-border)] px-5 py-4">
           <div className="mb-3 flex items-baseline justify-between">
@@ -210,6 +239,146 @@ function NodeCard({
       </div>
     </Card>
   );
+}
+
+function AgentUpdatePanel({
+  node,
+  canManage,
+  onCheck,
+  onUpdate,
+  checkPending,
+  updatePending,
+}: {
+  node: NodeSummary;
+  canManage: boolean;
+  onCheck: () => void;
+  onUpdate: () => void;
+  checkPending: boolean;
+  updatePending: boolean;
+}) {
+  const updateAvailable =
+    node.agent_self_update_capable && node.agent_update_status === 'available';
+  const updateBusy = ['updating', 'restarting'].includes(node.agent_update_status);
+  const checkDisabled = checkPending || updatePending || updateBusy;
+  const updateDisabled = updatePending || checkPending || updateBusy || !updateAvailable;
+
+  return (
+    <div className="border-t border-[var(--color-border)] px-5 py-4">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div className="min-w-0 space-y-2">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <span className="text-[11px] uppercase tracking-[0.18em] text-[var(--color-muted)]">
+              Agent
+            </span>
+            <StatusPill
+              status={agentUpdateSemantic(node)}
+              label={agentUpdateLabel(node)}
+              pulse={updateBusy}
+            />
+            {node.agent_version ? <Tag>v{node.agent_version}</Tag> : null}
+          </div>
+          <div className="grid grid-cols-1 gap-x-5 gap-y-1 text-xs text-[var(--color-muted)] lg:grid-cols-2">
+            <AgentMeta label="Image" value={node.agent_image_ref ?? 'unknown'} />
+            <AgentMeta label="Digest" value={formatDigest(node.agent_image_digest)} />
+            <AgentMeta
+              label="Target"
+              value={formatDigest(node.agent_update_target_digest)}
+            />
+            <div>
+              <span className="text-[var(--color-subtle)]">Checked </span>
+              {node.agent_update_checked_at ? (
+                <RelativeTime date={node.agent_update_checked_at} />
+              ) : (
+                <span>never</span>
+              )}
+            </div>
+          </div>
+          {node.agent_update_error ? (
+            <div className="text-xs text-red-400">{node.agent_update_error}</div>
+          ) : null}
+        </div>
+
+        {canManage ? (
+          <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+            <Button
+              variant="secondary"
+              onClick={onCheck}
+              disabled={checkDisabled}
+              className="gap-1.5"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${checkPending ? 'animate-spin' : ''}`} />
+              <span>{checkPending ? 'Checking' : 'Check update'}</span>
+            </Button>
+            {updateAvailable ? (
+              <Button
+                variant="primary"
+                onClick={onUpdate}
+                disabled={updateDisabled}
+                className="gap-1.5"
+              >
+                <Download className="h-3.5 w-3.5" />
+                <span>{updatePending ? 'Updating' : 'Update agent'}</span>
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function AgentMeta({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <span className="text-[var(--color-subtle)]">{label} </span>
+      <span className="break-all font-mono text-[11px] text-[var(--color-fg)]">{value}</span>
+    </div>
+  );
+}
+
+function agentUpdateSemantic(node: NodeSummary): SemanticStatus {
+  if (!node.agent_self_update_capable) return 'muted';
+  switch (node.agent_update_status) {
+    case 'current':
+      return 'ok';
+    case 'available':
+    case 'updating':
+    case 'restarting':
+      return 'warn';
+    case 'failed':
+    case 'check_failed':
+      return 'error';
+    default:
+      return 'muted';
+  }
+}
+
+function agentUpdateLabel(node: NodeSummary): string {
+  if (!node.agent_self_update_capable) return 'unsupported';
+  switch (node.agent_update_status) {
+    case 'current':
+      return 'current';
+    case 'available':
+      return 'update available';
+    case 'updating':
+      return 'updating';
+    case 'restarting':
+      return 'restarting';
+    case 'failed':
+      return 'failed';
+    case 'check_failed':
+      return 'check failed';
+    default:
+      return 'not checked';
+  }
+}
+
+function formatDigest(digest: string | null): string {
+  if (!digest) return 'unknown';
+  if (digest.startsWith('sha256:') && digest.length > 19) {
+    return `${digest.slice(0, 19)}...`;
+  }
+  return digest;
 }
 
 function ConfirmBanner({

@@ -1,7 +1,7 @@
 pub mod routes;
 
 use anyhow::Result;
-use sqlx::PgPool;
+use sea_orm::DatabaseConnection;
 
 pub struct SshKeyForSync {
     pub id: String,
@@ -10,8 +10,11 @@ pub struct SshKeyForSync {
     pub fingerprint: String,
 }
 
-pub async fn list_for_sync(pool: &PgPool, workspace_id: &str) -> Result<Vec<SshKeyForSync>> {
-    let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+pub async fn list_for_sync(
+    pool: &DatabaseConnection,
+    workspace_id: &str,
+) -> Result<Vec<SshKeyForSync>> {
+    let rows: Vec<(String, String, String, String)> = crate::db::query_tuple(
         "SELECT id, name, public_key, fingerprint FROM ssh_keys WHERE workspace_id = $1",
     )
     .bind(workspace_id)
@@ -32,7 +35,7 @@ pub async fn list_for_sync(pool: &PgPool, workspace_id: &str) -> Result<Vec<SshK
 /// key ids that succeeded. Individual failures are logged and skipped so a
 /// single bad key never blocks provisioning.
 pub async fn ensure_on_hetzner(
-    pool: &PgPool,
+    pool: &DatabaseConnection,
     workspace_id: &str,
     hetzner_token: &str,
 ) -> Result<Vec<i64>> {

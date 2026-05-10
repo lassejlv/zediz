@@ -31,9 +31,21 @@ struct RegisterRequest {
     bootstrap_token: String,
     hostname: Option<String>,
     agent_version: Option<String>,
+    #[serde(default)]
+    agent_image_ref: Option<String>,
+    #[serde(default)]
+    agent_image_digest: Option<String>,
+    #[serde(default)]
+    agent_self_update_capable: Option<bool>,
     total_cpu_millis: Option<i32>,
     total_memory_mb: Option<i32>,
     total_disk_mb: Option<i32>,
+    #[serde(default)]
+    private_network_capable: bool,
+    #[serde(default)]
+    wireguard_public_key: Option<String>,
+    #[serde(default)]
+    wireguard_listen_port: Option<i32>,
 }
 
 #[derive(Serialize)]
@@ -56,7 +68,7 @@ async fn register(
     .map_err(|_| ApiError::Unauthorized)?;
 
     let existing: Option<(String, Option<String>)> =
-        sqlx::query_as("SELECT workspace_id, status FROM nodes WHERE id = $1")
+        crate::db::query_tuple("SELECT workspace_id, status FROM nodes WHERE id = $1")
             .bind(&claims.node_id)
             .fetch_optional(state.pool())
             .await?;
@@ -69,8 +81,15 @@ async fn register(
     let node_token = tokens::mint_node(state.master_key(), &claims.node_id, &claims.workspace_id)
         .map_err(ApiError::Internal)?;
     let node_token_hash = tokens::fingerprint(&node_token);
+    let private_network_capable =
+        req.private_network_capable && req.wireguard_public_key.as_deref().is_some();
+    let mesh_ip = if private_network_capable {
+        Some(crate::private_network::assign_node_mesh_ip(state.pool(), &claims.node_id).await?)
+    } else {
+        None
+    };
 
-    sqlx::query(
+    crate::db::query(
         "UPDATE nodes SET \
             status = 'ready', \
             node_token_hash = $1, \
@@ -80,16 +99,36 @@ async fn register(
             total_memory_mb = COALESCE($4, total_memory_mb), \
             total_disk_mb = COALESCE($5, total_disk_mb), \
             registered_at = COALESCE(registered_at, now()), \
-            last_seen_at = now() \
-         WHERE id = $6",
+            last_seen_at = now(), \
+            private_network_capable = $6, \
+            wireguard_public_key = $7, \
+            wireguard_mesh_ip = COALESCE($8, wireguard_mesh_ip), \
+            wireguard_listen_port = COALESCE($9, wireguard_listen_port) \
+         WHERE id = $10",
     )
     .bind(&node_token_hash)
     .bind(req.agent_version.as_deref())
     .bind(req.total_cpu_millis)
     .bind(req.total_memory_mb)
     .bind(req.total_disk_mb)
+    .bind(private_network_capable)
+    .bind(req.wireguard_public_key.as_deref())
+    .bind(mesh_ip.as_deref())
+    .bind(req.wireguard_listen_port)
     .bind(&claims.node_id)
     .execute(state.pool())
+    .await?;
+
+    crate::agent_updates::record_agent_snapshot(
+        state.pool(),
+        &claims.node_id,
+        crate::agent_updates::AgentSnapshot {
+            version: req.agent_version.as_deref(),
+            image_ref: req.agent_image_ref.as_deref(),
+            image_digest: req.agent_image_digest.as_deref(),
+            self_update_capable: req.agent_self_update_capable,
+        },
+    )
     .await?;
 
     if let Some(name) = req.hostname {
@@ -97,6 +136,17 @@ async fn register(
     }
 
     crate::scheduler::nudge(&state);
+    if private_network_capable {
+        if let Err(e) =
+            crate::private_network::sync_workspace(state.pool(), &claims.workspace_id).await
+        {
+            tracing::warn!(
+                error = ?e,
+                workspace = %claims.workspace_id,
+                "queue private network sync after agent register",
+            );
+        }
+    }
 
     Ok(Json(RegisterResponse {
         node_id: claims.node_id,
@@ -131,7 +181,7 @@ impl FromRequestParts<AppState> for NodeAuth {
             .map_err(|_| ApiError::Unauthorized)?;
 
         let fp = tokens::fingerprint(token);
-        let row: Option<(String,)> = sqlx::query_as(
+        let row: Option<(String,)> = crate::db::query_tuple(
             "SELECT id FROM nodes WHERE id = $1 AND node_token_hash = $2 AND status <> 'terminated'",
         )
         .bind(&claims.node_id)
@@ -140,7 +190,7 @@ impl FromRequestParts<AppState> for NodeAuth {
         .await?;
         row.ok_or(ApiError::Unauthorized)?;
 
-        sqlx::query("UPDATE nodes SET last_seen_at = now() WHERE id = $1")
+        crate::db::query("UPDATE nodes SET last_seen_at = now() WHERE id = $1")
             .bind(&claims.node_id)
             .execute(state.pool())
             .await?;
@@ -159,9 +209,23 @@ struct HeartbeatRequest {
     #[serde(default)]
     load_avg_1m: Option<f32>,
     #[serde(default)]
+    agent_version: Option<String>,
+    #[serde(default)]
+    agent_image_ref: Option<String>,
+    #[serde(default)]
+    agent_image_digest: Option<String>,
+    #[serde(default)]
+    agent_self_update_capable: Option<bool>,
+    #[serde(default)]
     acks: Vec<CommandAck>,
     #[serde(default)]
     container_metrics: Vec<ContainerMetricSample>,
+    #[serde(default)]
+    private_network_capable: Option<bool>,
+    #[serde(default)]
+    wireguard_public_key: Option<String>,
+    #[serde(default)]
+    wireguard_listen_port: Option<i32>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -207,6 +271,11 @@ async fn heartbeat(
     }
 
     for ack in req.acks {
+        let kind: Option<(String,)> =
+            crate::db::query_tuple("SELECT kind FROM agent_commands WHERE id = $1")
+                .bind(&ack.command_id)
+                .fetch_optional(state.pool())
+                .await?;
         commands::mark_acked(
             state.pool(),
             &ack.command_id,
@@ -214,14 +283,54 @@ async fn heartbeat(
             ack.message.as_deref(),
         )
         .await?;
+        if kind.as_ref().map(|(kind,)| kind.as_str()) == Some("sync_private_network") {
+            if ack.ok {
+                crate::db::query(
+                    "UPDATE nodes SET private_network_synced_at = now(), \
+                                      private_network_sync_error = NULL \
+                     WHERE id = $1",
+                )
+                .bind(&claims.node_id)
+                .execute(state.pool())
+                .await?;
+            } else {
+                crate::db::query("UPDATE nodes SET private_network_sync_error = $1 WHERE id = $2")
+                    .bind(ack.message.as_deref())
+                    .bind(&claims.node_id)
+                    .execute(state.pool())
+                    .await?;
+            }
+        }
+        if kind.as_ref().map(|(kind,)| kind.as_str()) == Some("update_agent") {
+            crate::agent_updates::record_update_ack(
+                state.pool(),
+                &claims.node_id,
+                &ack.command_id,
+                ack.ok,
+                ack.message.as_deref(),
+            )
+            .await?;
+        }
     }
+
+    crate::agent_updates::record_agent_snapshot(
+        state.pool(),
+        &claims.node_id,
+        crate::agent_updates::AgentSnapshot {
+            version: req.agent_version.as_deref(),
+            image_ref: req.agent_image_ref.as_deref(),
+            image_digest: req.agent_image_digest.as_deref(),
+            self_update_capable: req.agent_self_update_capable,
+        },
+    )
+    .await?;
 
     for sample in req.container_metrics {
         // Scope the write to deployments owned by this node to prevent a
         // compromised agent from poisoning other nodes' rows. The UPDATE's
         // rows_affected tells us whether this node actually owns the
         // deployment; only then do we persist the history row.
-        let update_res = sqlx::query(
+        let update_res = crate::db::query(
             "UPDATE deployments \
              SET runtime_metrics = $1 \
              WHERE id = $2 AND node_id = $3",
@@ -248,7 +357,7 @@ async fn heartbeat(
         // Append to the time-series history. ON CONFLICT DO NOTHING guards
         // against a duplicate (deployment_id, ts) if the agent retries a
         // heartbeat.
-        if let Err(e) = sqlx::query(
+        if let Err(e) = crate::db::query(
             "INSERT INTO deployment_metrics \
                 (deployment_id, ts, cpu_percent, memory_bytes, \
                  memory_limit_bytes, rx_bytes, tx_bytes) \
@@ -271,6 +380,34 @@ async fn heartbeat(
                 "insert deployment_metrics",
             );
         }
+    }
+
+    if req.private_network_capable.is_some()
+        || req.wireguard_public_key.is_some()
+        || req.wireguard_listen_port.is_some()
+    {
+        let capable =
+            req.private_network_capable.unwrap_or(false) && req.wireguard_public_key.is_some();
+        let mesh_ip = if capable {
+            Some(crate::private_network::assign_node_mesh_ip(state.pool(), &claims.node_id).await?)
+        } else {
+            None
+        };
+        crate::db::query(
+            "UPDATE nodes SET \
+                private_network_capable = $1, \
+                wireguard_public_key = $2, \
+                wireguard_mesh_ip = COALESCE($3, wireguard_mesh_ip), \
+                wireguard_listen_port = COALESCE($4, wireguard_listen_port) \
+             WHERE id = $5",
+        )
+        .bind(capable)
+        .bind(req.wireguard_public_key.as_deref())
+        .bind(mesh_ip.as_deref())
+        .bind(req.wireguard_listen_port)
+        .bind(&claims.node_id)
+        .execute(state.pool())
+        .await?;
     }
 
     let pending = commands::claim_for_node(state.pool(), &claims.node_id, 16).await?;
@@ -299,7 +436,7 @@ async fn deployment_status(
         return Err(ApiError::Validation("invalid status".into()));
     }
 
-    let row: Option<(String, String)> = sqlx::query_as(
+    let row: Option<(String, String)> = crate::db::query_tuple(
         "SELECT d.service_id, d.status FROM deployments d \
          JOIN services s ON s.id = d.service_id \
          JOIN projects p ON p.id = s.project_id \
@@ -325,7 +462,7 @@ async fn deployment_status(
         None
     };
 
-    sqlx::query(
+    crate::db::query(
         "UPDATE deployments SET \
             status = $1, \
             container_id = COALESCE($2, container_id), \
@@ -347,7 +484,8 @@ async fn deployment_status(
     .await?;
 
     if matches!(update.status.as_str(), "stopped" | "errored") {
-        sqlx::query("DELETE FROM node_allocations WHERE deployment_id = $1")
+        crate::private_network::release_deployment_ip(state.pool(), &deployment_id).await?;
+        crate::db::query("DELETE FROM node_allocations WHERE deployment_id = $1")
             .bind(&deployment_id)
             .execute(state.pool())
             .await?;
@@ -390,6 +528,16 @@ async fn deployment_status(
             tracing::warn!(error = ?e, node = %node_id, "push_routes_for_node");
         }
     }
+    if status_changed
+        && matches!(
+            update.status.as_str(),
+            "running" | "stopped" | "errored" | "failing"
+        )
+    {
+        if let Err(e) = crate::private_network::sync_for_service(state.pool(), &service_id).await {
+            tracing::warn!(error = ?e, service = %service_id, "sync private network for service");
+        }
+    }
 
     Ok(())
 }
@@ -412,7 +560,7 @@ async fn push_logs(
     Path(deployment_id): Path<String>,
     Json(req): Json<PushLogsRequest>,
 ) -> ApiResult<()> {
-    let row: Option<(String,)> = sqlx::query_as(
+    let row: Option<(String,)> = crate::db::query_tuple(
         "SELECT d.id FROM deployments d \
          WHERE d.id = $1 AND ( \
              d.node_id = $2 OR \
@@ -436,7 +584,7 @@ async fn push_logs(
         if !matches!(l.stream.as_str(), "stdout" | "stderr") {
             continue;
         }
-        sqlx::query(
+        crate::db::query(
             "INSERT INTO deployment_logs (deployment_id, stream, ts, line) VALUES ($1, $2, $3, $4)",
         )
         .bind(&deployment_id)
@@ -448,7 +596,7 @@ async fn push_logs(
     }
 
     // Trim: keep ~2000 most recent lines per deployment.
-    sqlx::query(
+    crate::db::query(
         "DELETE FROM deployment_logs WHERE deployment_id = $1 AND id NOT IN ( \
             SELECT id FROM deployment_logs WHERE deployment_id = $1 ORDER BY id DESC LIMIT 2000 \
          )",
@@ -475,7 +623,7 @@ pub async fn tail_logs(
     crate::deployments::authorize(state.pool(), &deployment_id, &auth.user_id).await?;
 
     struct TailState {
-        pool: sqlx::PgPool,
+        pool: sea_orm::DatabaseConnection,
         deployment_id: String,
         buffer: std::collections::VecDeque<(i64, String, DateTime<Utc>, String)>,
         last_id: i64,
@@ -502,7 +650,7 @@ pub async fn tail_logs(
             }
             s.first_poll = false;
 
-            let rows: Vec<(i64, String, DateTime<Utc>, String)> = sqlx::query_as(
+            let rows: Vec<(i64, String, DateTime<Utc>, String)> = crate::db::query_tuple(
                 "SELECT id, stream, ts, line FROM deployment_logs \
                  WHERE deployment_id = $1 AND id > $2 ORDER BY id ASC LIMIT 500",
             )
@@ -560,7 +708,7 @@ async fn build_status(
     }
 
     let terminal = matches!(update.status.as_str(), "succeeded" | "failed");
-    sqlx::query(
+    crate::db::query(
         "UPDATE builds SET \
             status = $1, \
             reason = COALESCE($2, reason), \
@@ -594,7 +742,7 @@ async fn build_status(
                     ApiError::Validation("succeeded build must include image_tag".into())
                 })?;
             if let Some(commit) = update.git_commit.as_deref() {
-                sqlx::query(
+                crate::db::query(
                     "UPDATE services SET git_commit = $1, updated_at = now() WHERE id = $2",
                 )
                 .bind(commit)
@@ -602,12 +750,14 @@ async fn build_status(
                 .execute(state.pool())
                 .await?;
             }
-            sqlx::query("UPDATE services SET image_ref = $1, updated_at = now() WHERE id = $2")
-                .bind(&image_tag)
-                .bind(&build.service_id)
-                .execute(state.pool())
-                .await?;
-            sqlx::query(
+            crate::db::query(
+                "UPDATE services SET image_ref = $1, updated_at = now() WHERE id = $2",
+            )
+            .bind(&image_tag)
+            .bind(&build.service_id)
+            .execute(state.pool())
+            .await?;
+            crate::db::query(
                 "UPDATE deployments SET image_ref = $1, status = 'pending', \
                                         reason = 'build succeeded', updated_at = now() \
                  WHERE id = $2",
@@ -617,7 +767,7 @@ async fn build_status(
             .execute(state.pool())
             .await?;
             // Release the small build reservation so pull_and_run can pick a runtime node.
-            sqlx::query("DELETE FROM node_allocations WHERE deployment_id = $1")
+            crate::db::query("DELETE FROM node_allocations WHERE deployment_id = $1")
                 .bind(&deployment_id)
                 .execute(state.pool())
                 .await?;
@@ -625,7 +775,7 @@ async fn build_status(
         }
         "failed" => {
             let reason = update.reason.unwrap_or_else(|| "build failed".to_string());
-            sqlx::query(
+            crate::db::query(
                 "UPDATE deployments SET status = 'errored', reason = $1, \
                                         stopped_at = now(), updated_at = now() \
                  WHERE id = $2",
@@ -634,7 +784,7 @@ async fn build_status(
             .bind(&deployment_id)
             .execute(state.pool())
             .await?;
-            sqlx::query("DELETE FROM node_allocations WHERE deployment_id = $1")
+            crate::db::query("DELETE FROM node_allocations WHERE deployment_id = $1")
                 .bind(&deployment_id)
                 .execute(state.pool())
                 .await?;

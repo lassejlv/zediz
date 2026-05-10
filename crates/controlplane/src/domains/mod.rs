@@ -2,7 +2,7 @@ pub mod routes;
 
 use anyhow::Result;
 use reqwest::redirect::Policy;
-use sqlx::PgPool;
+use sea_orm::DatabaseConnection;
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -20,8 +20,8 @@ pub struct NodeRoute {
 
 /// Fetch the current live route set for a node: each service_domain whose
 /// service has a running deployment pinned to this node.
-pub async fn routes_for_node(pool: &PgPool, node_id: &str) -> Result<Vec<NodeRoute>> {
-    let rows: Vec<(String, i32, String)> = sqlx::query_as(
+pub async fn routes_for_node(pool: &DatabaseConnection, node_id: &str) -> Result<Vec<NodeRoute>> {
+    let rows: Vec<(String, i32, String)> = crate::db::query_tuple(
         "SELECT sd.hostname, sd.container_port, d.id AS deployment_id \
          FROM service_domains sd \
          JOIN services s ON s.id = sd.service_id \
@@ -47,8 +47,8 @@ pub async fn routes_for_node(pool: &PgPool, node_id: &str) -> Result<Vec<NodeRou
 /// Return every node currently hosting a running deployment for the given
 /// service. These are the nodes whose Caddy needs updating when a domain on
 /// this service changes.
-pub async fn nodes_for_service(pool: &PgPool, service_id: &str) -> Result<Vec<String>> {
-    let rows: Vec<(String,)> = sqlx::query_as(
+pub async fn nodes_for_service(pool: &DatabaseConnection, service_id: &str) -> Result<Vec<String>> {
+    let rows: Vec<(String,)> = crate::db::query_tuple(
         "SELECT DISTINCT d.node_id FROM deployments d \
          WHERE d.service_id = $1 AND d.node_id IS NOT NULL AND d.status = 'running'",
     )
@@ -85,8 +85,8 @@ pub fn validate_hostname(h: &str) -> Result<(), String> {
 /// Refresh `service_domains.tls_status` by probing each hostname over HTTPS.
 /// A domain is only considered probeable once its service has a running
 /// deployment; until then it stays `pending`.
-pub async fn refresh_tls_statuses(pool: &PgPool) -> Result<()> {
-    let rows: Vec<(String, String, bool, Option<String>)> = sqlx::query_as(
+pub async fn refresh_tls_statuses(pool: &DatabaseConnection) -> Result<()> {
+    let rows: Vec<(String, String, bool, Option<String>)> = crate::db::query_tuple(
         "SELECT sd.id, sd.hostname, \
                 EXISTS(SELECT 1 FROM deployments d \
                        WHERE d.service_id = sd.service_id AND d.status = 'running') AS has_running, \
@@ -111,7 +111,7 @@ pub async fn refresh_tls_statuses(pool: &PgPool) -> Result<()> {
 
     for (id, hostname, has_running, expected_ip) in rows {
         if !has_running {
-            sqlx::query(
+            crate::db::query(
                 "UPDATE service_domains SET \
                     tls_status = 'pending', \
                     last_error = NULL, \
@@ -164,7 +164,7 @@ pub async fn refresh_tls_statuses(pool: &PgPool) -> Result<()> {
 
         match probe_hostname(&http, &hostname).await {
             Ok(()) => {
-                sqlx::query(
+                crate::db::query(
                     "UPDATE service_domains SET \
                         tls_status = 'active', \
                         last_error = NULL, \
@@ -183,8 +183,8 @@ pub async fn refresh_tls_statuses(pool: &PgPool) -> Result<()> {
     Ok(())
 }
 
-async fn mark_failed(pool: &PgPool, id: &str, err: &str) -> Result<()> {
-    sqlx::query(
+async fn mark_failed(pool: &DatabaseConnection, id: &str, err: &str) -> Result<()> {
+    crate::db::query(
         "UPDATE service_domains SET \
             tls_status = 'failed', \
             last_error = $2, \

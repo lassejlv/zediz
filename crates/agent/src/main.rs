@@ -1,15 +1,17 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::time::Duration;
 use driftbase_common::telemetry;
+use std::time::Duration;
 
 mod build;
 mod caddy;
 mod client;
 mod docker;
 mod executor;
+mod private_network;
+mod self_update;
 
-use crate::client::ControlPlaneClient;
+use crate::client::{ControlPlaneClient, RegisterInput};
 use crate::docker::DockerExec;
 
 #[derive(Parser, Debug)]
@@ -43,6 +45,8 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let client = ControlPlaneClient::new(&args.control_plane_url);
+    let private_network = private_network::load_or_create_identity().await;
+    let mut agent_update = self_update::detect().await;
 
     let (node_token, node_id) = if let Some(tok) = args.node_token.clone() {
         tracing::info!("using pre-issued node token");
@@ -60,12 +64,30 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| hostname().unwrap_or_else(|| "driftbase-node".into()));
         let specs = host_resources();
         let resp = client
-            .register(&bootstrap, &host, specs.0, specs.1, specs.2)
+            .register(RegisterInput {
+                bootstrap_token: &bootstrap,
+                hostname: &host,
+                cpu: specs.0,
+                mem: specs.1,
+                disk: specs.2,
+                private_network: private_network.as_ref(),
+                agent_update: &agent_update,
+            })
             .await
             .context("registering with control plane")?;
         tracing::info!(node = %resp.node_id, "registered");
         (resp.node_token, resp.node_id)
     };
+
+    match self_update::persist_node_token(&node_token).await {
+        Ok(()) => {
+            agent_update = self_update::detect().await;
+        }
+        Err(e) => {
+            tracing::warn!(error = ?e, "node token was not persisted for agent self-update");
+            agent_update.self_update_capable = false;
+        }
+    }
 
     let docker = DockerExec::connect().context("connecting to local docker")?;
 
@@ -76,7 +98,14 @@ async fn main() -> Result<()> {
     }
 
     let heartbeat_interval = Duration::from_secs(10);
-    let mut exec = executor::Executor::new(client, docker, node_token, node_id);
+    let mut exec = executor::Executor::new(
+        client,
+        docker,
+        node_token,
+        node_id,
+        private_network,
+        agent_update,
+    );
     loop {
         if let Err(e) = exec.tick().await {
             tracing::warn!(error = ?e, "agent tick failed");

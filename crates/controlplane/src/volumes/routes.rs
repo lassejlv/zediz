@@ -31,7 +31,7 @@ async fn list(
     Path(slug): Path<String>,
 ) -> ApiResult<Json<Vec<VolumeSummary>>> {
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
-    let rows: Vec<VolumeRow> = sqlx::query_as(&format!(
+    let rows: Vec<VolumeRow> = crate::db::query_as(format!(
         "SELECT {VOLUME_COLUMNS} FROM volumes \
          WHERE workspace_id = $1 ORDER BY created_at DESC"
     ))
@@ -74,7 +74,7 @@ async fn create(
     // Default to the workspace's default region. We always set a
     // location — the UI doesn't expose an override yet.
     let workspace_location: (String,) =
-        sqlx::query_as("SELECT hetzner_location FROM workspaces WHERE id = $1")
+        crate::db::query_tuple("SELECT hetzner_location FROM workspaces WHERE id = $1")
             .bind(ctx.workspace_id.to_string())
             .fetch_one(state.pool())
             .await?;
@@ -82,7 +82,7 @@ async fn create(
 
     // Insert the row first so concurrent deletes / races see our intent.
     let volume_id = Id::new().to_string();
-    sqlx::query(
+    crate::db::query(
         "INSERT INTO volumes (id, workspace_id, name, size_gb, hetzner_location, status) \
          VALUES ($1, $2, $3, $4, $5, 'creating')",
     )
@@ -94,10 +94,10 @@ async fn create(
     .execute(state.pool())
     .await
     .map_err(|e| match e {
-        sqlx::Error::Database(db) if db.is_unique_violation() => {
+        e if crate::db::is_unique_violation(&e) => {
             ApiError::Conflict("a volume with that name already exists".into())
         }
-        other => ApiError::Sqlx(other),
+        other => ApiError::Db(other),
     })?;
 
     // Call Hetzner. On any failure, delete the row so the user can retry.
@@ -129,18 +129,20 @@ async fn create(
 
         // Update the row with the real Hetzner id before we wait for
         // the action so a crash mid-wait still leaves us a pointer.
-        sqlx::query("UPDATE volumes SET hetzner_volume_id = $1, updated_at = now() WHERE id = $2")
-            .bind(created.volume.id)
-            .bind(&volume_id)
-            .execute(state.pool())
-            .await?;
+        crate::db::query(
+            "UPDATE volumes SET hetzner_volume_id = $1, updated_at = now() WHERE id = $2",
+        )
+        .bind(created.volume.id)
+        .bind(&volume_id)
+        .execute(state.pool())
+        .await?;
 
         client
             .wait_for_action(created.action.id, Duration::from_secs(120))
             .await
             .map_err(|e| ApiError::Internal(anyhow::anyhow!("hetzner volume action: {e}")))?;
 
-        sqlx::query(
+        crate::db::query(
             "UPDATE volumes SET status = 'available', reason = NULL, updated_at = now() \
              WHERE id = $1",
         )
@@ -156,7 +158,7 @@ async fn create(
         // Best-effort cleanup. We may have a dangling Hetzner volume
         // if creation succeeded but the wait failed; log and carry on
         // so the user can retry without hitting the name conflict.
-        let _ = sqlx::query("DELETE FROM volumes WHERE id = $1")
+        let _ = crate::db::query("DELETE FROM volumes WHERE id = $1")
             .bind(&volume_id)
             .execute(state.pool())
             .await;
@@ -241,7 +243,7 @@ async fn attach_to_service(
 
     volumes::validate_mount_path(&req.mount_path)?;
 
-    sqlx::query(
+    crate::db::query(
         "UPDATE volumes \
          SET attached_service_id = $1, mount_path = $2, status = 'attached', \
              updated_at = now() \
@@ -253,10 +255,10 @@ async fn attach_to_service(
     .execute(state.pool())
     .await
     .map_err(|e| match e {
-        sqlx::Error::Database(db) if db.is_unique_violation() => {
+        e if crate::db::is_unique_violation(&e) => {
             ApiError::Conflict("another volume is already attached to this service".into())
         }
-        other => ApiError::Sqlx(other),
+        other => ApiError::Db(other),
     })?;
 
     let row = volumes::fetch_by_id(state.pool(), &req.volume_id)
@@ -278,7 +280,7 @@ async fn detach_from_service(
     // scheduler needs the node for a different volume, or when the user
     // deletes the volume. Keeping the block device mounted on the node
     // in the meantime is harmless.
-    sqlx::query(
+    crate::db::query(
         "UPDATE volumes \
          SET attached_service_id = NULL, mount_path = NULL, \
              status = CASE WHEN attached_node_id IS NULL THEN 'available' ELSE 'attached' END, \
@@ -292,12 +294,12 @@ async fn detach_from_service(
 }
 
 async fn resolve_service(
-    pool: &sqlx::PgPool,
+    pool: &sea_orm::DatabaseConnection,
     ctx: &membership::WorkspaceContext,
     project_slug: &str,
     service_slug: &str,
 ) -> ApiResult<String> {
-    let row: Option<(String,)> = sqlx::query_as(
+    let row: Option<(String,)> = crate::db::query_tuple(
         "SELECT s.id FROM services s \
          JOIN projects p ON p.id = s.project_id \
          WHERE p.workspace_id = $1 AND p.slug = $2 AND s.slug = $3",

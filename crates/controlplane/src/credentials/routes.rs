@@ -2,10 +2,10 @@ use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
 use driftbase_common::Id;
 use driftbase_hetzner::HetznerClient;
+use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 use crate::auth::AuthUser;
 use crate::error::{ApiError, ApiResult};
@@ -59,7 +59,7 @@ pub struct CredentialSummary {
     pub last_used_at: Option<DateTime<Utc>>,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sea_orm::FromQueryResult)]
 struct CredentialRow {
     id: String,
     kind: String,
@@ -97,7 +97,7 @@ async fn list(
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
     membership::require(&ctx, Role::Admin)?;
 
-    let rows: Vec<CredentialRow> = sqlx::query_as(
+    let rows: Vec<CredentialRow> = crate::db::query_as(
         "SELECT id, kind, name, metadata, created_at, updated_at, last_used_at \
          FROM credentials WHERE workspace_id = $1 ORDER BY created_at DESC",
     )
@@ -175,7 +175,7 @@ async fn create(
         }
     }
 
-    let inserted: Option<CredentialRow> = sqlx::query_as(
+    let inserted: Option<CredentialRow> = crate::db::query_as(
         "INSERT INTO credentials (id, workspace_id, kind, name, encrypted, metadata, created_by) \
          VALUES ($1, $2, $3, $4, $5, $6, $7) \
          ON CONFLICT (workspace_id, kind, name) DO NOTHING \
@@ -217,7 +217,7 @@ async fn rotate(
     }
 
     let existing: Option<(String,)> =
-        sqlx::query_as("SELECT kind FROM credentials WHERE id = $1 AND workspace_id = $2")
+        crate::db::query_tuple("SELECT kind FROM credentials WHERE id = $1 AND workspace_id = $2")
             .bind(&id)
             .bind(ctx.workspace_id.to_string())
             .fetch_optional(state.pool())
@@ -238,7 +238,7 @@ async fn rotate(
         .encrypt(req.secret.as_bytes())
         .map_err(ApiError::Internal)?;
 
-    let row: CredentialRow = sqlx::query_as(
+    let row: CredentialRow = crate::db::query_as(
         "UPDATE credentials SET encrypted = $1, \
          metadata = COALESCE($2, metadata), \
          updated_at = now() \
@@ -278,7 +278,7 @@ async fn delete(
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
     membership::require(&ctx, Role::Admin)?;
 
-    let res = sqlx::query("DELETE FROM credentials WHERE id = $1 AND workspace_id = $2")
+    let res = crate::db::query("DELETE FROM credentials WHERE id = $1 AND workspace_id = $2")
         .bind(&id)
         .bind(ctx.workspace_id.to_string())
         .execute(state.pool())

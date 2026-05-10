@@ -1,6 +1,7 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use sea_orm::DbErr;
 use serde::Serialize;
 use thiserror::Error;
 
@@ -19,7 +20,7 @@ pub enum ApiError {
     #[error("internal: {0}")]
     Internal(#[from] anyhow::Error),
     #[error(transparent)]
-    Sqlx(#[from] sqlx::Error),
+    Db(#[from] DbErr),
 }
 
 #[derive(Serialize)]
@@ -42,8 +43,10 @@ impl ApiError {
             ApiError::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
             ApiError::Validation(_) => (StatusCode::UNPROCESSABLE_ENTITY, "validation"),
             ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
-            ApiError::Sqlx(sqlx::Error::RowNotFound) => (StatusCode::NOT_FOUND, "not_found"),
-            ApiError::Sqlx(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+            ApiError::Db(err) if crate::db::is_not_found(err) => {
+                (StatusCode::NOT_FOUND, "not_found")
+            }
+            ApiError::Db(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         }
     }
 }
@@ -55,7 +58,7 @@ impl IntoResponse for ApiError {
             tracing::error!(error = ?self, "server error");
         }
         let message = match &self {
-            ApiError::Internal(_) | ApiError::Sqlx(_) => "internal server error".to_string(),
+            ApiError::Internal(_) | ApiError::Db(_) => "internal server error".to_string(),
             ApiError::Forbidden(msg) if msg.is_empty() => "forbidden".to_string(),
             ApiError::Forbidden(msg) => msg.clone(),
             other => other.to_string(),

@@ -442,6 +442,10 @@ function OverviewTab({
               label="Source"
               value={<span className="font-mono text-xs">{service.source}</span>}
             />
+            <Row
+              label="Private host"
+              value={<CopyableId value={service.private_hostname} display={service.private_hostname} />}
+            />
             <Row label="Ports" value={service.ports.map((p) => p.container_port).join(', ') || '—'} />
             <Row
               label="Created"
@@ -922,4 +926,3 @@ function shortDigest(digest: string): string {
 }
 
 /* ---------- settings tab ---------- */
-

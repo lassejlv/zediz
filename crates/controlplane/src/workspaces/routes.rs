@@ -2,8 +2,9 @@ use axum::extract::{Path, State};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use driftbase_common::Id;
+use sea_orm::TransactionTrait;
+use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthUser;
 use crate::error::{ApiError, ApiResult};
@@ -67,31 +68,34 @@ async fn create(
         return Err(ApiError::Validation("name is required".into()));
     }
 
-    let mut tx = state.pool().begin().await?;
+    let tx = state.pool().begin().await?;
 
-    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM workspaces WHERE slug = $1")
-        .bind(&slug)
-        .fetch_optional(&mut *tx)
-        .await?;
+    let exists: Option<(String,)> =
+        crate::db::query_tuple("SELECT id FROM workspaces WHERE slug = $1")
+            .bind(&slug)
+            .fetch_optional(&tx)
+            .await?;
     if exists.is_some() {
         return Err(ApiError::Conflict("slug already taken".into()));
     }
 
     let id = Id::new();
-    sqlx::query("INSERT INTO workspaces (id, slug, name, owner_user_id) VALUES ($1, $2, $3, $4)")
-        .bind(id.to_string())
-        .bind(&slug)
-        .bind(&name)
-        .bind(auth.user_id.to_string())
-        .execute(&mut *tx)
-        .await?;
+    crate::db::query(
+        "INSERT INTO workspaces (id, slug, name, owner_user_id) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(id.to_string())
+    .bind(&slug)
+    .bind(&name)
+    .bind(auth.user_id.to_string())
+    .execute(&tx)
+    .await?;
 
-    sqlx::query(
+    crate::db::query(
         "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ($1, $2, 'owner')",
     )
     .bind(id.to_string())
     .bind(auth.user_id.to_string())
-    .execute(&mut *tx)
+    .execute(&tx)
     .await?;
 
     tx.commit().await?;
@@ -114,7 +118,7 @@ async fn list(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> ApiResult<Json<Vec<WorkspaceSummary>>> {
-    let rows: Vec<(String, String, String, String, DateTime<Utc>)> = sqlx::query_as(
+    let rows: Vec<(String, String, String, String, DateTime<Utc>)> = crate::db::query_tuple(
         "SELECT w.id, w.slug, w.name, m.role, w.created_at \
          FROM workspaces w \
          JOIN workspace_members m ON m.workspace_id = w.id \
@@ -145,7 +149,7 @@ async fn list(
     ))
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sea_orm::FromQueryResult)]
 struct WorkspaceRow {
     id: String,
     slug: String,
@@ -184,7 +188,7 @@ async fn show(
     auth: AuthUser,
     Path(slug): Path<String>,
 ) -> ApiResult<Json<WorkspaceSummary>> {
-    let row: Option<WorkspaceRow> = sqlx::query_as(
+    let row: Option<WorkspaceRow> = crate::db::query_as(
         "SELECT w.id, w.slug, w.name, m.role, w.created_at, \
                 w.hetzner_location, w.default_server_type, w.max_nodes, \
                 w.max_monthly_euro, w.autoscale_idle_ttl_seconds \
@@ -244,7 +248,7 @@ async fn update(
         }
     }
 
-    sqlx::query(
+    crate::db::query(
         "UPDATE workspaces SET \
             name = COALESCE($1, name), \
             hetzner_location = COALESCE($2, hetzner_location), \
@@ -264,7 +268,7 @@ async fn update(
     .execute(state.pool())
     .await?;
 
-    let row: WorkspaceRow = sqlx::query_as(
+    let row: WorkspaceRow = crate::db::query_as(
         "SELECT w.id, w.slug, w.name, m.role, w.created_at, \
                 w.hetzner_location, w.default_server_type, w.max_nodes, \
                 w.max_monthly_euro, w.autoscale_idle_ttl_seconds \
@@ -295,7 +299,7 @@ async fn list_members(
 ) -> ApiResult<Json<Vec<MemberRow>>> {
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
 
-    let rows: Vec<(String, String, String, String, DateTime<Utc>)> = sqlx::query_as(
+    let rows: Vec<(String, String, String, String, DateTime<Utc>)> = crate::db::query_tuple(
         "SELECT u.id, u.email, u.display_name, m.role, m.joined_at \
          FROM workspace_members m \
          JOIN users u ON u.id = m.user_id \
@@ -344,7 +348,7 @@ async fn update_member(
         return Err(ApiError::Validation("cannot change your own role".into()));
     }
 
-    let current: Option<(String,)> = sqlx::query_as(
+    let current: Option<(String,)> = crate::db::query_tuple(
         "SELECT role FROM workspace_members WHERE workspace_id = $1 AND user_id = $2",
     )
     .bind(ctx.workspace_id.to_string())
@@ -356,12 +360,14 @@ async fn update_member(
         return Err(ApiError::Forbidden(String::new()));
     }
 
-    sqlx::query("UPDATE workspace_members SET role = $1 WHERE workspace_id = $2 AND user_id = $3")
-        .bind(req.role.as_str())
-        .bind(ctx.workspace_id.to_string())
-        .bind(&target_user_id)
-        .execute(state.pool())
-        .await?;
+    crate::db::query(
+        "UPDATE workspace_members SET role = $1 WHERE workspace_id = $2 AND user_id = $3",
+    )
+    .bind(req.role.as_str())
+    .bind(ctx.workspace_id.to_string())
+    .bind(&target_user_id)
+    .execute(state.pool())
+    .await?;
 
     Ok(())
 }
@@ -379,7 +385,7 @@ async fn remove_member(
         membership::require(&ctx, Role::Admin)?;
     }
 
-    let target: Option<(String,)> = sqlx::query_as(
+    let target: Option<(String,)> = crate::db::query_tuple(
         "SELECT role FROM workspace_members WHERE workspace_id = $1 AND user_id = $2",
     )
     .bind(ctx.workspace_id.to_string())
@@ -391,7 +397,7 @@ async fn remove_member(
         return Err(ApiError::Forbidden(String::new()));
     }
 
-    sqlx::query("DELETE FROM workspace_members WHERE workspace_id = $1 AND user_id = $2")
+    crate::db::query("DELETE FROM workspace_members WHERE workspace_id = $1 AND user_id = $2")
         .bind(ctx.workspace_id.to_string())
         .bind(&target_user_id)
         .execute(state.pool())

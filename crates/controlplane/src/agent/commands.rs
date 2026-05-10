@@ -1,9 +1,9 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use driftbase_common::Id;
+use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use sqlx::PgPool;
-use driftbase_common::Id;
 
 /// Kinds of commands enqueued for an agent to execute.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -17,6 +17,8 @@ pub enum CommandKind {
     Prune,
     UpdateRoutes,
     Build,
+    SyncPrivateNetwork,
+    UpdateAgent,
 }
 
 impl CommandKind {
@@ -30,6 +32,8 @@ impl CommandKind {
             CommandKind::Prune => "prune",
             CommandKind::UpdateRoutes => "update_routes",
             CommandKind::Build => "build",
+            CommandKind::SyncPrivateNetwork => "sync_private_network",
+            CommandKind::UpdateAgent => "update_agent",
         }
     }
 }
@@ -45,14 +49,14 @@ pub struct AgentCommand {
 }
 
 pub async fn enqueue(
-    pool: &PgPool,
+    pool: &DatabaseConnection,
     node_id: &str,
     deployment_id: Option<&str>,
     kind: CommandKind,
     payload: JsonValue,
 ) -> Result<Id> {
     let id = Id::new();
-    sqlx::query(
+    crate::db::query(
         "INSERT INTO agent_commands (id, node_id, deployment_id, kind, payload) \
          VALUES ($1, $2, $3, $4, $5)",
     )
@@ -67,8 +71,12 @@ pub async fn enqueue(
 }
 
 /// Returns the up-to-`limit` pending commands for a node and marks them `dispatched`.
-pub async fn claim_for_node(pool: &PgPool, node_id: &str, limit: i64) -> Result<Vec<AgentCommand>> {
-    #[derive(sqlx::FromRow)]
+pub async fn claim_for_node(
+    pool: &DatabaseConnection,
+    node_id: &str,
+    limit: i64,
+) -> Result<Vec<AgentCommand>> {
+    #[derive(sea_orm::FromQueryResult)]
     struct Row {
         id: String,
         deployment_id: Option<String>,
@@ -76,7 +84,7 @@ pub async fn claim_for_node(pool: &PgPool, node_id: &str, limit: i64) -> Result<
         payload: JsonValue,
         created_at: DateTime<Utc>,
     }
-    let rows: Vec<Row> = sqlx::query_as(
+    let rows: Vec<Row> = crate::db::query_as(
         "UPDATE agent_commands SET status = 'dispatched', dispatched_at = now() \
          WHERE id IN ( \
              SELECT id FROM agent_commands \
@@ -102,13 +110,13 @@ pub async fn claim_for_node(pool: &PgPool, node_id: &str, limit: i64) -> Result<
 }
 
 pub async fn mark_acked(
-    pool: &PgPool,
+    pool: &DatabaseConnection,
     command_id: &str,
     ok: bool,
     result: Option<&str>,
 ) -> Result<()> {
     let status = if ok { "acked" } else { "errored" };
-    sqlx::query(
+    crate::db::query(
         "UPDATE agent_commands SET status = $1, result = $2, acked_at = now() \
          WHERE id = $3",
     )
@@ -132,32 +140,52 @@ pub struct VolumeMount<'a> {
     pub container_path: &'a str,
 }
 
-pub fn pull_and_run_payload(
-    image: &str,
-    env: &serde_json::Value,
-    ports: &serde_json::Value,
-    cpu_millis: u32,
-    memory_mb: u32,
-    registry: Option<&RegistryAuth<'_>>,
-    volume: Option<&VolumeMount<'_>>,
-) -> JsonValue {
-    let registry =
-        registry.map(|r| json!({ "url": r.url, "username": r.username, "password": r.password }));
-    let volume = volume.map(|v| {
+pub struct PrivateNetwork<'a> {
+    pub network_name: &'a str,
+    pub ip_address: &'a str,
+    pub dns_ip: &'a str,
+    pub aliases: &'a [String],
+}
+
+pub struct PullAndRunPayload<'a> {
+    pub image: &'a str,
+    pub env: &'a serde_json::Value,
+    pub ports: &'a serde_json::Value,
+    pub cpu_millis: u32,
+    pub memory_mb: u32,
+    pub registry: Option<&'a RegistryAuth<'a>>,
+    pub volume: Option<&'a VolumeMount<'a>>,
+    pub private_network: Option<&'a PrivateNetwork<'a>>,
+}
+
+pub fn pull_and_run_payload(p: &PullAndRunPayload<'_>) -> JsonValue {
+    let registry = p
+        .registry
+        .map(|r| json!({ "url": r.url, "username": r.username, "password": r.password }));
+    let volume = p.volume.map(|v| {
         json!({
             "device_path": v.device_path,
             "host_path": v.host_path,
             "container_path": v.container_path,
         })
     });
+    let private_network = p.private_network.map(|n| {
+        json!({
+            "network_name": n.network_name,
+            "ip_address": n.ip_address,
+            "dns_ip": n.dns_ip,
+            "aliases": n.aliases,
+        })
+    });
     json!({
-        "image": image,
-        "env": env,
-        "ports": ports,
-        "cpu_millis": cpu_millis,
-        "memory_mb": memory_mb,
+        "image": p.image,
+        "env": p.env,
+        "ports": p.ports,
+        "cpu_millis": p.cpu_millis,
+        "memory_mb": p.memory_mb,
         "registry": registry,
         "volume": volume,
+        "private_network": private_network,
     })
 }
 

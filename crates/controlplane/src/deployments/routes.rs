@@ -48,17 +48,21 @@ async fn stop(
         .map_err(|e| crate::error::ApiError::Internal(anyhow::anyhow!("{e}")))?;
     } else {
         // Never placed anywhere — just flip the row.
-        sqlx::query(
-            "UPDATE deployments SET status = 'stopped', stopped_at = now(), updated_at = now() \
+        crate::db::query(
+            "UPDATE deployments SET status = 'stopped', stopped_at = now(), \
+                                    private_ipv4 = NULL, updated_at = now() \
              WHERE id = $1",
         )
         .bind(&id)
         .execute(state.pool())
         .await?;
-        sqlx::query("DELETE FROM node_allocations WHERE deployment_id = $1")
+        crate::db::query("DELETE FROM node_allocations WHERE deployment_id = $1")
             .bind(&id)
             .execute(state.pool())
             .await?;
+    }
+    if let Err(e) = crate::private_network::sync_for_service(state.pool(), &row.service_id).await {
+        tracing::warn!(error = ?e, service = %row.service_id, "sync private network after stop");
     }
 
     let updated = deployments::fetch_by_id(state.pool(), &id).await?;
@@ -84,24 +88,25 @@ async fn restart(
         .map_err(|e| crate::error::ApiError::Internal(anyhow::anyhow!("{e}")))?;
     }
 
-    sqlx::query(
+    crate::db::query(
         "UPDATE deployments SET status = 'pending', container_id = NULL, \
                                 node_id = NULL, reason = NULL, \
-                                started_at = NULL, stopped_at = NULL, updated_at = now() \
+                                private_ipv4 = NULL, started_at = NULL, \
+                                stopped_at = NULL, updated_at = now() \
          WHERE id = $1",
     )
     .bind(&id)
     .execute(state.pool())
     .await?;
 
-    sqlx::query("DELETE FROM node_allocations WHERE deployment_id = $1")
+    crate::db::query("DELETE FROM node_allocations WHERE deployment_id = $1")
         .bind(&id)
         .execute(state.pool())
         .await?;
 
     // Restart is an explicit "start over" intent — clear any scheduler pause
     // left over from a node delete so provisioning can kick off immediately.
-    sqlx::query(
+    crate::db::query(
         "UPDATE workspaces SET scheduler_paused_until = NULL \
          WHERE id = (SELECT p.workspace_id FROM deployments d \
                      JOIN services s ON s.id = d.service_id \
@@ -113,6 +118,9 @@ async fn restart(
     .await?;
 
     crate::scheduler::nudge(&state);
+    if let Err(e) = crate::private_network::sync_for_service(state.pool(), &row.service_id).await {
+        tracing::warn!(error = ?e, service = %row.service_id, "sync private network after restart");
+    }
 
     let updated = deployments::fetch_by_id(state.pool(), &id).await?;
     Ok(Json(DeploymentSummary::try_from(updated)?))
@@ -151,7 +159,7 @@ struct MetricsSample {
     tx_rate: Option<f64>,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sea_orm::FromQueryResult)]
 struct MetricsRow {
     ts: DateTime<Utc>,
     cpu_percent: f32,
@@ -173,7 +181,7 @@ async fn metrics_history(
 
     let minutes = q.minutes.unwrap_or(60).clamp(1, 60);
 
-    let rows: Vec<MetricsRow> = sqlx::query_as(
+    let rows: Vec<MetricsRow> = crate::db::query_as(
         "SELECT ts, cpu_percent, memory_bytes, memory_limit_bytes, rx_bytes, tx_bytes, \
                 CASE WHEN prev_rx IS NULL OR rx_bytes < prev_rx OR dt_secs <= 0 \
                      THEN NULL \

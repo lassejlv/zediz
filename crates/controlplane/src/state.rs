@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use sqlx::PgPool;
+use sea_orm::DatabaseConnection;
 
 use crate::config::Config;
 use crate::crypto::MasterKey;
@@ -12,14 +12,14 @@ pub struct AppState {
 }
 
 pub struct Inner {
-    pub pool: PgPool,
+    pub pool: DatabaseConnection,
     pub config: Config,
     pub master_key: MasterKey,
     pub scheduler: SchedulerHandle,
 }
 
 impl AppState {
-    pub fn new(pool: PgPool, config: Config, master_key: MasterKey) -> Self {
+    pub fn new(pool: DatabaseConnection, config: Config, master_key: MasterKey) -> Self {
         Self {
             inner: Arc::new(Inner {
                 pool,
@@ -30,7 +30,7 @@ impl AppState {
         }
     }
 
-    pub fn pool(&self) -> &PgPool {
+    pub fn pool(&self) -> &DatabaseConnection {
         &self.inner.pool
     }
 

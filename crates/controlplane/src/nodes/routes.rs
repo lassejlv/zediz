@@ -2,9 +2,9 @@ use axum::extract::{Path, Query, State};
 use axum::routing::{delete as delete_route, get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
+use driftbase_common::Id;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use driftbase_common::Id;
 
 use crate::auth::AuthUser;
 use crate::credentials;
@@ -17,6 +17,14 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/workspaces/:slug/nodes", get(list).post(provision))
         .route("/workspaces/:slug/nodes/:id/drain", post(drain))
+        .route(
+            "/workspaces/:slug/nodes/:id/agent-update/check",
+            post(check_agent_update),
+        )
+        .route(
+            "/workspaces/:slug/nodes/:id/agent-update",
+            post(update_agent),
+        )
         .route("/workspaces/:slug/nodes/:id", delete_route(delete))
 }
 
@@ -34,6 +42,22 @@ pub struct NodeSummary {
     pub used_disk_mb: i32,
     pub labels: JsonValue,
     pub public_ipv4: Option<String>,
+    pub agent_version: Option<String>,
+    pub agent_image_ref: Option<String>,
+    pub agent_image_digest: Option<String>,
+    pub agent_self_update_capable: bool,
+    pub agent_update_status: String,
+    pub agent_update_checked_at: Option<DateTime<Utc>>,
+    pub agent_update_target_image_ref: Option<String>,
+    pub agent_update_target_digest: Option<String>,
+    pub agent_update_command_id: Option<Id>,
+    pub agent_update_error: Option<String>,
+    pub agent_update_started_at: Option<DateTime<Utc>>,
+    pub agent_update_finished_at: Option<DateTime<Utc>>,
+    pub private_network_capable: bool,
+    pub wireguard_mesh_ip: Option<String>,
+    pub private_network_synced_at: Option<DateTime<Utc>>,
+    pub private_network_sync_error: Option<String>,
     pub last_seen_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub workloads: Vec<NodeWorkloadSummary>,
@@ -52,7 +76,7 @@ pub struct NodeWorkloadSummary {
     pub disk_mb: i32,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sea_orm::FromQueryResult)]
 struct NodeRow {
     id: String,
     name: String,
@@ -66,11 +90,27 @@ struct NodeRow {
     used_disk_mb: Option<i64>,
     labels: JsonValue,
     public_ipv4: Option<String>,
+    agent_version: Option<String>,
+    agent_image_ref: Option<String>,
+    agent_image_digest: Option<String>,
+    agent_self_update_capable: bool,
+    agent_update_status: String,
+    agent_update_checked_at: Option<DateTime<Utc>>,
+    agent_update_target_image_ref: Option<String>,
+    agent_update_target_digest: Option<String>,
+    agent_update_command_id: Option<String>,
+    agent_update_error: Option<String>,
+    agent_update_started_at: Option<DateTime<Utc>>,
+    agent_update_finished_at: Option<DateTime<Utc>>,
+    private_network_capable: bool,
+    wireguard_mesh_ip: Option<String>,
+    private_network_synced_at: Option<DateTime<Utc>>,
+    private_network_sync_error: Option<String>,
     last_seen_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sea_orm::FromQueryResult)]
 struct NodeWorkloadRow {
     node_id: String,
     kind: String,
@@ -103,6 +143,26 @@ impl TryFrom<(NodeRow, Vec<NodeWorkloadSummary>)> for NodeSummary {
             used_disk_mb: r.used_disk_mb.unwrap_or(0) as i32,
             labels: r.labels,
             public_ipv4: r.public_ipv4,
+            agent_version: r.agent_version,
+            agent_image_ref: r.agent_image_ref,
+            agent_image_digest: r.agent_image_digest,
+            agent_self_update_capable: r.agent_self_update_capable,
+            agent_update_status: r.agent_update_status,
+            agent_update_checked_at: r.agent_update_checked_at,
+            agent_update_target_image_ref: r.agent_update_target_image_ref,
+            agent_update_target_digest: r.agent_update_target_digest,
+            agent_update_command_id: r
+                .agent_update_command_id
+                .map(|s| s.parse())
+                .transpose()
+                .map_err(|e: ulid::DecodeError| ApiError::Internal(anyhow::anyhow!("{e}")))?,
+            agent_update_error: r.agent_update_error,
+            agent_update_started_at: r.agent_update_started_at,
+            agent_update_finished_at: r.agent_update_finished_at,
+            private_network_capable: r.private_network_capable,
+            wireguard_mesh_ip: r.wireguard_mesh_ip,
+            private_network_synced_at: r.private_network_synced_at,
+            private_network_sync_error: r.private_network_sync_error,
             last_seen_at: r.last_seen_at,
             created_at: r.created_at,
             workloads,
@@ -142,13 +202,21 @@ async fn list(
 ) -> ApiResult<Json<Vec<NodeSummary>>> {
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
 
-    let rows: Vec<NodeRow> = sqlx::query_as(
+    let rows: Vec<NodeRow> = crate::db::query_as(
         "SELECT n.id, n.name, n.provider, n.status, \
                 n.total_cpu_millis, n.total_memory_mb, n.total_disk_mb, \
                 COALESCE(SUM(a.cpu_millis), 0)::bigint AS used_cpu_millis, \
                 COALESCE(SUM(a.memory_mb), 0)::bigint AS used_memory_mb, \
                 COALESCE(SUM(a.disk_mb), 0)::bigint AS used_disk_mb, \
-                n.labels, n.public_ipv4, n.last_seen_at, n.created_at \
+                n.labels, n.public_ipv4, \
+                n.agent_version, n.agent_image_ref, n.agent_image_digest, \
+                n.agent_self_update_capable, n.agent_update_status, \
+                n.agent_update_checked_at, n.agent_update_target_image_ref, \
+                n.agent_update_target_digest, n.agent_update_command_id, \
+                n.agent_update_error, n.agent_update_started_at, n.agent_update_finished_at, \
+                n.private_network_capable, \
+                n.wireguard_mesh_ip, n.private_network_synced_at, \
+                n.private_network_sync_error, n.last_seen_at, n.created_at \
          FROM nodes n \
          LEFT JOIN node_allocations a ON a.node_id = n.id \
          WHERE n.workspace_id = $1 \
@@ -159,7 +227,7 @@ async fn list(
     .fetch_all(state.pool())
     .await?;
 
-    let workload_rows: Vec<NodeWorkloadRow> = sqlx::query_as(
+    let workload_rows: Vec<NodeWorkloadRow> = crate::db::query_as(
         "SELECT a.node_id, \
                 CASE WHEN b.id IS NULL THEN 'runtime' ELSE 'build' END AS kind, \
                 COALESCE(b.status, d.status) AS status, \
@@ -215,18 +283,54 @@ async fn drain(
     membership::require(&ctx, Role::Admin)?;
 
     let row: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM nodes WHERE id = $1 AND workspace_id = $2")
+        crate::db::query_tuple("SELECT id FROM nodes WHERE id = $1 AND workspace_id = $2")
             .bind(&node_id)
             .bind(ctx.workspace_id.to_string())
             .fetch_optional(state.pool())
             .await?;
     row.ok_or(ApiError::NotFound)?;
 
-    sqlx::query("UPDATE nodes SET status = 'draining' WHERE id = $1")
+    crate::db::query("UPDATE nodes SET status = 'draining' WHERE id = $1")
         .bind(&node_id)
         .execute(state.pool())
         .await?;
     Ok(())
+}
+
+async fn check_agent_update(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((slug, node_id)): Path<(String, String)>,
+) -> ApiResult<Json<crate::agent_updates::AgentUpdateResponse>> {
+    let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
+    membership::require(&ctx, Role::Admin)?;
+
+    crate::agent_updates::check_node_update(
+        state.pool(),
+        state.config(),
+        &ctx.workspace_id.to_string(),
+        &node_id,
+    )
+    .await
+    .map(Json)
+}
+
+async fn update_agent(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((slug, node_id)): Path<(String, String)>,
+) -> ApiResult<Json<crate::agent_updates::AgentUpdateResponse>> {
+    let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
+    membership::require(&ctx, Role::Admin)?;
+
+    crate::agent_updates::enqueue_node_update(
+        state.pool(),
+        state.config(),
+        &ctx.workspace_id.to_string(),
+        &node_id,
+    )
+    .await
+    .map(Json)
 }
 
 #[derive(Deserialize, Default)]
@@ -244,14 +348,14 @@ async fn delete(
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
     membership::require(&ctx, Role::Admin)?;
 
-    #[derive(sqlx::FromRow)]
+    #[derive(sea_orm::FromQueryResult)]
     struct Node {
         id: String,
         provider: String,
         status: String,
         hetzner_server_id: Option<i64>,
     }
-    let node: Option<Node> = sqlx::query_as(
+    let node: Option<Node> = crate::db::query_as(
         "SELECT id, provider, status, hetzner_server_id FROM nodes \
          WHERE id = $1 AND workspace_id = $2",
     )
@@ -262,7 +366,7 @@ async fn delete(
     let node = node.ok_or(ApiError::NotFound)?;
 
     let (busy,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*)::bigint FROM node_allocations WHERE node_id = $1")
+        crate::db::query_tuple("SELECT COUNT(*)::bigint FROM node_allocations WHERE node_id = $1")
             .bind(&node.id)
             .fetch_one(state.pool())
             .await?;
@@ -297,7 +401,7 @@ async fn delete(
 
     // Already-terminated tombstone, or no credential to hit Hetzner with —
     // just drop the row so the UI stays clean. No pause: no live VM was killed.
-    sqlx::query("DELETE FROM nodes WHERE id = $1")
+    crate::db::query("DELETE FROM nodes WHERE id = $1")
         .bind(&node.id)
         .execute(state.pool())
         .await?;
@@ -307,8 +411,8 @@ async fn delete(
 /// After any manual delete/terminate, pause auto-provisioning for 2 minutes so
 /// the scheduler doesn't immediately replace the node while the user is
 /// investigating. Admins can override by resuming via Settings (future work).
-async fn pause_scheduler(pool: &sqlx::PgPool, workspace_id: &str) -> ApiResult<()> {
-    sqlx::query(
+async fn pause_scheduler(pool: &sea_orm::DatabaseConnection, workspace_id: &str) -> ApiResult<()> {
+    crate::db::query(
         "UPDATE workspaces SET scheduler_paused_until = now() + interval '2 minutes' \
          WHERE id = $1",
     )
@@ -341,20 +445,20 @@ async fn provision(
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
     membership::require(&ctx, Role::Admin)?;
 
-    #[derive(sqlx::FromRow)]
+    #[derive(sea_orm::FromQueryResult)]
     struct Ws {
         hetzner_location: String,
         default_server_type: Option<String>,
         max_nodes: i32,
     }
-    let ws: Ws = sqlx::query_as(
+    let ws: Ws = crate::db::query_as(
         "SELECT hetzner_location, default_server_type, max_nodes FROM workspaces WHERE id = $1",
     )
     .bind(ctx.workspace_id.to_string())
     .fetch_one(state.pool())
     .await?;
 
-    let (current,): (i64,) = sqlx::query_as(
+    let (current,): (i64,) = crate::db::query_tuple(
         "SELECT COUNT(*)::bigint FROM nodes \
          WHERE workspace_id = $1 AND provider = 'hetzner' AND status <> 'terminated'",
     )

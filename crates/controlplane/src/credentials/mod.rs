@@ -1,18 +1,18 @@
 pub mod routes;
 
 use anyhow::{anyhow, Context, Result};
+use sea_orm::DatabaseConnection;
 use serde_json::Value as JsonValue;
-use sqlx::PgPool;
 
 use crate::crypto::MasterKey;
 
 /// Decrypt and return the first Hetzner API token stored for `workspace_id`, if any.
 pub async fn first_hetzner_token(
-    pool: &PgPool,
+    pool: &DatabaseConnection,
     master_key: &MasterKey,
     workspace_id: &str,
 ) -> Result<Option<String>> {
-    let row: Option<(Vec<u8>,)> = sqlx::query_as(
+    let row: Option<(Vec<u8>,)> = crate::db::query_tuple(
         "SELECT encrypted FROM credentials \
          WHERE workspace_id = $1 AND kind = 'hetzner_api_token' \
          ORDER BY created_at ASC LIMIT 1",
@@ -40,12 +40,12 @@ pub struct DecryptedCredential {
 /// if the credential is missing, the workspace doesn't own it, or the secret
 /// isn't valid UTF-8 (all of our kinds store text — tokens, passwords, PATs).
 pub async fn fetch_decrypted(
-    pool: &PgPool,
+    pool: &DatabaseConnection,
     master_key: &MasterKey,
     workspace_id: &str,
     credential_id: &str,
 ) -> Result<Option<DecryptedCredential>> {
-    let row: Option<(String, Vec<u8>, JsonValue)> = sqlx::query_as(
+    let row: Option<(String, Vec<u8>, JsonValue)> = crate::db::query_tuple(
         "SELECT kind, encrypted, metadata FROM credentials \
          WHERE id = $1 AND workspace_id = $2",
     )
@@ -72,11 +72,11 @@ pub async fn fetch_decrypted(
 /// against the URL path. The registry proxy uses this and then enforces the
 /// workspace-scope check itself.
 pub async fn fetch_for_proxy(
-    pool: &PgPool,
+    pool: &DatabaseConnection,
     master_key: &MasterKey,
     credential_id: &str,
 ) -> Result<Option<(String, DecryptedCredential)>> {
-    let row: Option<(String, String, Vec<u8>, JsonValue)> = sqlx::query_as(
+    let row: Option<(String, String, Vec<u8>, JsonValue)> = crate::db::query_tuple(
         "SELECT workspace_id, kind, encrypted, metadata FROM credentials \
          WHERE id = $1",
     )

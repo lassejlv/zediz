@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Context, Result};
-use sqlx::PgPool;
-use std::time::Duration;
 use driftbase_common::Id;
 use driftbase_hetzner::{pick_server_type, CreateServerRequest, HetznerClient, ServerType};
+use sea_orm::DatabaseConnection;
+use std::time::Duration;
 
 use crate::agent::tokens;
 use crate::config::Config;
@@ -12,8 +12,6 @@ use crate::services::Resources;
 
 /// Default Hetzner image; cloud-init inside installs docker + agent.
 const DEFAULT_IMAGE: &str = "debian-12";
-const AGENT_IMAGE_ENV: &str = "DRIFTBASE_AGENT_IMAGE";
-const DEFAULT_AGENT_IMAGE: &str = "ghcr.io/lassejlv/driftbase-agent:latest";
 
 /// Minimum headroom multiplier: provisioned node must fit 120% of need.
 const HEADROOM: f32 = 1.2;
@@ -35,7 +33,7 @@ pub enum NodeSize<'a> {
 /// create action, and return identifiers. Agent registration flips it to `ready`.
 #[allow(clippy::too_many_arguments)]
 pub async fn provision(
-    pool: &PgPool,
+    pool: &DatabaseConnection,
     config: &Config,
     master_key: &MasterKey,
     hetzner_token: &str,
@@ -98,17 +96,15 @@ pub async fn provision(
     let total_disk_mb = (st.disk * 1024) as i32;
 
     let name = format!("driftbase-{}", &node_id.to_string()[..8]);
-    let agent_image =
-        std::env::var(AGENT_IMAGE_ENV).unwrap_or_else(|_| DEFAULT_AGENT_IMAGE.to_string());
     let user_data = cloud_init::render(
         &config.public_url,
         &bootstrap,
-        &agent_image,
+        &config.agent_image,
         &node_id.to_string(),
         workspace_id,
     );
 
-    sqlx::query(
+    crate::db::query(
         "INSERT INTO nodes (id, workspace_id, name, provider, status, \
                             total_cpu_millis, total_memory_mb, total_disk_mb, \
                             bootstrap_token_hash, hetzner_location, hetzner_server_type) \
@@ -143,7 +139,7 @@ pub async fn provision(
     let created = match client.create_server(&req).await {
         Ok(r) => r,
         Err(e) => {
-            sqlx::query("DELETE FROM nodes WHERE id = $1")
+            crate::db::query("DELETE FROM nodes WHERE id = $1")
                 .bind(node_id.to_string())
                 .execute(pool)
                 .await
@@ -159,7 +155,7 @@ pub async fn provision(
         .as_ref()
         .map(|v| v.ip.clone());
 
-    sqlx::query("UPDATE nodes SET hetzner_server_id = $1, public_ipv4 = $2 WHERE id = $3")
+    crate::db::query("UPDATE nodes SET hetzner_server_id = $1, public_ipv4 = $2 WHERE id = $3")
         .bind(created.server.id)
         .bind(public_ipv4.as_deref())
         .bind(node_id.to_string())
@@ -190,17 +186,19 @@ pub async fn provision(
 /// removed entirely. On Hetzner failure the tombstone remains and the caller
 /// gets an error to retry.
 pub async fn terminate(
-    pool: &PgPool,
+    pool: &DatabaseConnection,
     hetzner_token: &str,
     node_id: &str,
     hetzner_server_id: i64,
 ) -> Result<()> {
     // Stop scheduling to this node immediately.
-    sqlx::query("UPDATE nodes SET status = 'terminated', node_token_hash = NULL WHERE id = $1")
-        .bind(node_id)
-        .execute(pool)
-        .await?;
-    sqlx::query("DELETE FROM node_allocations WHERE node_id = $1")
+    crate::db::query(
+        "UPDATE nodes SET status = 'terminated', node_token_hash = NULL WHERE id = $1",
+    )
+    .bind(node_id)
+    .execute(pool)
+    .await?;
+    crate::db::query("DELETE FROM node_allocations WHERE node_id = $1")
         .bind(node_id)
         .execute(pool)
         .await?;
@@ -214,7 +212,7 @@ pub async fn terminate(
         .map_err(|e| anyhow!("hetzner delete_server {hetzner_server_id}: {e}"))?;
 
     // VM confirmed gone — drop the row.
-    sqlx::query("DELETE FROM nodes WHERE id = $1")
+    crate::db::query("DELETE FROM nodes WHERE id = $1")
         .bind(node_id)
         .execute(pool)
         .await?;

@@ -5,11 +5,11 @@ use axum::{Json, Router};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
+use driftbase_common::Id;
 use rand::RngCore;
+use sea_orm::{DatabaseConnection, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::PgPool;
-use driftbase_common::Id;
 
 use crate::auth::AuthUser;
 use crate::error::{ApiError, ApiResult};
@@ -88,7 +88,7 @@ async fn create_invite(
     let (token, token_hash) = mint_token();
     let expires_at = Utc::now() + Duration::days(INVITE_TTL_DAYS);
 
-    sqlx::query(
+    crate::db::query(
         "INSERT INTO invites (id, workspace_id, email, role, token_hash, invited_by, expires_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
@@ -102,10 +102,10 @@ async fn create_invite(
     .execute(state.pool())
     .await
     .map_err(|e| match &e {
-        sqlx::Error::Database(db) if db.is_unique_violation() => {
+        e if crate::db::is_unique_violation(e) => {
             ApiError::Conflict("invite already pending for this email".into())
         }
-        _ => ApiError::Sqlx(e),
+        _ => ApiError::Db(e),
     })?;
 
     let accept_url = format!(
@@ -128,7 +128,7 @@ async fn create_invite(
     }))
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sea_orm::FromQueryResult)]
 struct InviteRow {
     id: String,
     email: String,
@@ -146,7 +146,7 @@ async fn list_invites(
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
     membership::require(&ctx, Role::Admin)?;
 
-    let rows: Vec<InviteRow> = sqlx::query_as(
+    let rows: Vec<InviteRow> = crate::db::query_as(
         "SELECT id, email, role, expires_at, created_at, accepted_at \
          FROM invites WHERE workspace_id = $1 AND revoked_at IS NULL \
          ORDER BY created_at DESC",
@@ -179,7 +179,7 @@ async fn revoke_invite(
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
     membership::require(&ctx, Role::Admin)?;
 
-    let res = sqlx::query(
+    let res = crate::db::query(
         "UPDATE invites SET revoked_at = now() \
          WHERE id = $1 AND workspace_id = $2 AND accepted_at IS NULL AND revoked_at IS NULL",
     )
@@ -200,7 +200,7 @@ async fn accept_invite(
     Path(token): Path<String>,
 ) -> ApiResult<Json<InviteAccepted>> {
     // Load the user's email so we can match the invite.
-    let email: Option<(String,)> = sqlx::query_as("SELECT email FROM users WHERE id = $1")
+    let email: Option<(String,)> = crate::db::query_tuple("SELECT email FROM users WHERE id = $1")
         .bind(auth.user_id.to_string())
         .fetch_optional(state.pool())
         .await?;
@@ -222,21 +222,21 @@ pub struct InviteAccepted {
 /// Idempotently consume an invite on behalf of `user_id` whose email matches.
 /// Returns the workspace context so callers can redirect.
 pub async fn accept_for_user(
-    pool: &PgPool,
+    pool: &DatabaseConnection,
     token: &str,
     user_id: &Id,
     user_email: &str,
 ) -> ApiResult<AcceptedContext> {
     let token_hash = hash_token(token);
 
-    let mut tx = pool.begin().await?;
+    let tx = pool.begin().await?;
 
-    let row: Option<InviteLockedRow> = sqlx::query_as(
+    let row: Option<InviteLockedRow> = crate::db::query_as(
         "SELECT id, workspace_id, email, role, expires_at, accepted_at, revoked_at \
          FROM invites WHERE token_hash = $1 FOR UPDATE",
     )
     .bind(&token_hash)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&tx)
     .await?;
 
     let r = row.ok_or(ApiError::NotFound)?;
@@ -258,25 +258,25 @@ pub async fn accept_for_user(
     let workspace_id = r.workspace_id;
     let role = r.role;
 
-    sqlx::query(
+    crate::db::query(
         "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ($1, $2, $3) \
          ON CONFLICT (workspace_id, user_id) DO NOTHING",
     )
     .bind(&workspace_id)
     .bind(user_id.to_string())
     .bind(&role)
-    .execute(&mut *tx)
+    .execute(&tx)
     .await?;
 
-    sqlx::query("UPDATE invites SET accepted_at = now(), accepted_by = $1 WHERE id = $2")
+    crate::db::query("UPDATE invites SET accepted_at = now(), accepted_by = $1 WHERE id = $2")
         .bind(user_id.to_string())
         .bind(&invite_id)
-        .execute(&mut *tx)
+        .execute(&tx)
         .await?;
 
-    let slug: (String,) = sqlx::query_as("SELECT slug FROM workspaces WHERE id = $1")
+    let slug: (String,) = crate::db::query_tuple("SELECT slug FROM workspaces WHERE id = $1")
         .bind(&workspace_id)
-        .fetch_one(&mut *tx)
+        .fetch_one(&tx)
         .await?;
 
     tx.commit().await?;
@@ -295,7 +295,7 @@ pub struct AcceptedContext {
     pub slug: String,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sea_orm::FromQueryResult)]
 struct InviteLockedRow {
     id: String,
     workspace_id: String,

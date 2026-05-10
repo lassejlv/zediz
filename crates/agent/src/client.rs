@@ -23,21 +23,20 @@ impl ControlPlaneClient {
         }
     }
 
-    pub async fn register(
-        &self,
-        bootstrap_token: &str,
-        hostname: &str,
-        cpu: i32,
-        mem: i32,
-        disk: i32,
-    ) -> Result<RegisterResponse> {
+    pub async fn register(&self, input: RegisterInput<'_>) -> Result<RegisterResponse> {
         let body = serde_json::json!({
-            "bootstrap_token": bootstrap_token,
-            "hostname": hostname,
+            "bootstrap_token": input.bootstrap_token,
+            "hostname": input.hostname,
             "agent_version": env!("CARGO_PKG_VERSION"),
-            "total_cpu_millis": cpu,
-            "total_memory_mb": mem,
-            "total_disk_mb": disk,
+            "agent_image_ref": input.agent_update.image_ref.as_deref(),
+            "agent_image_digest": input.agent_update.image_digest.as_deref(),
+            "agent_self_update_capable": input.agent_update.self_update_capable,
+            "total_cpu_millis": input.cpu,
+            "total_memory_mb": input.mem,
+            "total_disk_mb": input.disk,
+            "private_network_capable": input.private_network.is_some(),
+            "wireguard_public_key": input.private_network.map(|id| id.public_key.as_str()),
+            "wireguard_listen_port": input.private_network.map(|id| id.listen_port),
         });
         let res = self
             .http
@@ -149,6 +148,16 @@ impl ControlPlaneClient {
     }
 }
 
+pub struct RegisterInput<'a> {
+    pub bootstrap_token: &'a str,
+    pub hostname: &'a str,
+    pub cpu: i32,
+    pub mem: i32,
+    pub disk: i32,
+    pub private_network: Option<&'a crate::private_network::Identity>,
+    pub agent_update: &'a crate::self_update::AgentUpdateState,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct RegisterResponse {
     pub node_id: String,
@@ -161,10 +170,24 @@ pub struct HeartbeatBody {
     pub memory_used_mb: Option<i32>,
     pub disk_used_mb: Option<i32>,
     pub load_avg_1m: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_image_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_image_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_self_update_capable: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub acks: Vec<CommandAck>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub container_metrics: Vec<ContainerMetricSample>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private_network_capable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wireguard_public_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wireguard_listen_port: Option<i32>,
 }
 
 /// One live snapshot of a running container's resource usage. Agent
@@ -182,7 +205,7 @@ pub struct ContainerMetricSample {
     pub tx_bytes: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CommandAck {
     pub command_id: String,
     pub ok: bool,

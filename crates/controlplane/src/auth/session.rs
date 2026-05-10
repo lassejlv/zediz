@@ -2,10 +2,10 @@ use anyhow::{anyhow, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
-use rand::RngCore;
-use sha2::{Digest, Sha256};
-use sqlx::PgPool;
 use driftbase_common::Id;
+use rand::RngCore;
+use sea_orm::DatabaseConnection;
+use sha2::{Digest, Sha256};
 
 pub const COOKIE_NAME: &str = "driftbase_session";
 pub const SESSION_TTL_DAYS: i64 = 30;
@@ -30,7 +30,7 @@ pub fn hash_token(token: &str) -> Vec<u8> {
 }
 
 pub async fn create(
-    pool: &PgPool,
+    pool: &DatabaseConnection,
     user_id: &Id,
     user_agent: Option<&str>,
     ip: Option<&str>,
@@ -39,7 +39,7 @@ pub async fn create(
     let id = Id::new();
     let expires_at = Utc::now() + Duration::days(SESSION_TTL_DAYS);
 
-    sqlx::query(
+    crate::db::query(
         "INSERT INTO sessions (id, user_id, token_hash, user_agent, ip, expires_at) \
          VALUES ($1, $2, $3, $4, $5, $6)",
     )
@@ -64,9 +64,9 @@ pub struct LoadedSession {
     pub session_id: Id,
 }
 
-pub async fn load(pool: &PgPool, token: &str) -> Result<Option<LoadedSession>> {
+pub async fn load(pool: &DatabaseConnection, token: &str) -> Result<Option<LoadedSession>> {
     let token_hash = hash_token(token);
-    let row: Option<(String, String)> = sqlx::query_as(
+    let row: Option<(String, String)> = crate::db::query_tuple(
         "SELECT id, user_id FROM sessions \
          WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now()",
     )
@@ -83,9 +83,9 @@ pub async fn load(pool: &PgPool, token: &str) -> Result<Option<LoadedSession>> {
     }))
 }
 
-pub async fn revoke(pool: &PgPool, token: &str) -> Result<()> {
+pub async fn revoke(pool: &DatabaseConnection, token: &str) -> Result<()> {
     let token_hash = hash_token(token);
-    sqlx::query("UPDATE sessions SET revoked_at = now() WHERE token_hash = $1")
+    crate::db::query("UPDATE sessions SET revoked_at = now() WHERE token_hash = $1")
         .bind(&token_hash)
         .execute(pool)
         .await?;
