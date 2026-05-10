@@ -10,7 +10,7 @@ pub struct Config {
     pub database_url: String,
     pub public_url: String,
     pub cookie_secure: bool,
-    /// Public hostname of the bundled registry (e.g. `registry.driftbase.dev`),
+    /// Public hostname of the bundled registry (e.g. `registry.driftbase.app`),
     /// or `None` when the bundled registry is not in use. Used to decide
     /// whether a registry credential's URL points at the bundled registry
     /// (and therefore whether the CP auth proxy should mediate it).

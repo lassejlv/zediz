@@ -336,7 +336,7 @@ function NewServicePage() {
           >
             <Input
               id="svc-registry-repo"
-              placeholder="registry.driftbase.dev/team/api"
+              placeholder="registry.driftbase.app/team/api"
               value={registryRepo}
               onChange={(e) => setRegistryRepo(e.target.value)}
             />

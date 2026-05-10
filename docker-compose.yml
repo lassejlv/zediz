@@ -10,12 +10,12 @@ services:
       DRIFTBASE_BIND_ADDR: 0.0.0.0:8080
       DRIFTBASE_DATABASE_URL: ${DRIFTBASE_DATABASE_URL:?DRIFTBASE_DATABASE_URL is required}
       DRIFTBASE_MASTER_KEY: ${DRIFTBASE_MASTER_KEY:?DRIFTBASE_MASTER_KEY is required}
-      DRIFTBASE_PUBLIC_URL: ${DRIFTBASE_PUBLIC_URL:-https://driftbase.dev}
+      DRIFTBASE_PUBLIC_URL: ${DRIFTBASE_PUBLIC_URL:-https://driftbase.app}
       DRIFTBASE_COOKIE_SECURE: "true"
       DRIFTBASE_AGENT_IMAGE: ${DRIFTBASE_AGENT_IMAGE:-ghcr.io/lassejlv/driftbase-agent:latest}
       # Bundled registry plumbing; empty disables the auth proxy + the
       # credential-create `username = id` override.
-      DRIFTBASE_REGISTRY_SITE: ${REGISTRY_SITE:-registry.driftbase.dev}
+      DRIFTBASE_REGISTRY_SITE: ${REGISTRY_SITE:-registry.driftbase.app}
       DRIFTBASE_REGISTRY_UPSTREAM: ${DRIFTBASE_REGISTRY_UPSTREAM:-http://registry:5000}
       RUST_LOG: ${RUST_LOG:-info}
     expose:
@@ -37,9 +37,9 @@ services:
       - "443:443"
       - "443:443/udp"
     environment:
-      CADDY_SITE: ${CADDY_SITE:-driftbase.dev}
-      CADDY_EMAIL: ${CADDY_EMAIL:-admin@driftbase.dev}
-      REGISTRY_SITE: ${REGISTRY_SITE:-registry.driftbase.dev}
+      CADDY_SITE: ${CADDY_SITE:-driftbase.app}
+      CADDY_EMAIL: ${CADDY_EMAIL:-admin@driftbase.app}
+      REGISTRY_SITE: ${REGISTRY_SITE:-registry.driftbase.app}
     volumes:
       - caddy_data:/data
       - caddy_config:/config

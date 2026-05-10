@@ -1,10 +1,10 @@
 {
 	# Let's Encrypt account email — used for issuing certs. Override via
 	# CADDY_EMAIL in the compose env.
-	email {$CADDY_EMAIL:admin@driftbase.dev}
+	email {$CADDY_EMAIL:admin@driftbase.app}
 }
 
-{$CADDY_SITE:driftbase.dev} {
+{$CADDY_SITE:driftbase.app} {
 	encode gzip zstd
 
 	# Control plane API + SSE. `flush_interval -1` disables response buffering
@@ -29,7 +29,7 @@
 # registry_proxy), which validates Basic auth against the credentials table
 # and scopes access to the workspace id in the URL path before forwarding to
 # the registry container.
-{$REGISTRY_SITE:registry.driftbase.dev} {
+{$REGISTRY_SITE:registry.driftbase.app} {
 	encode gzip zstd
 	reverse_proxy controlplane:8080 {
 		flush_interval -1

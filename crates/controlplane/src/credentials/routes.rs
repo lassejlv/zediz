@@ -256,7 +256,7 @@ async fn rotate(
 }
 
 /// True if `url` refers to the bundled registry — matches on hostname only
-/// so `https://registry.driftbase.dev/ws/svc` and the bare `registry.driftbase.dev`
+/// so `https://registry.driftbase.app/ws/svc` and the bare `registry.driftbase.app`
 /// both count.
 fn registry_host_matches(url: &str, bundled_host: &str) -> bool {
     let host = url
