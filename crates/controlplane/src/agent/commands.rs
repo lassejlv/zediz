@@ -19,6 +19,7 @@ pub enum CommandKind {
     Prune,
     UpdateRoutes,
     Build,
+    CancelBuild,
     SyncPrivateNetwork,
     UpdateAgent,
 }
@@ -34,6 +35,7 @@ impl CommandKind {
             CommandKind::Prune => "prune",
             CommandKind::UpdateRoutes => "update_routes",
             CommandKind::Build => "build",
+            CommandKind::CancelBuild => "cancel_build",
             CommandKind::SyncPrivateNetwork => "sync_private_network",
             CommandKind::UpdateAgent => "update_agent",
         }

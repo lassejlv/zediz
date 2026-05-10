@@ -12,12 +12,14 @@ import {
   ExternalLink,
   Info,
   Plus,
+  RefreshCw,
   Trash2,
   X,
 } from 'lucide-react';
 import {
   useAddDomain,
   useDeleteDomain,
+  useRetryDomain,
   useUpdateDomain,
   domainsQuery,
 } from '@/lib/domains';
@@ -66,6 +68,7 @@ export function DomainsSection({
   const add = useAddDomain(workspaceSlug, projectSlug, serviceSlug);
   const del = useDeleteDomain(workspaceSlug, projectSlug, serviceSlug);
   const updateDomain = useUpdateDomain(workspaceSlug, projectSlug, serviceSlug);
+  const retry = useRetryDomain(workspaceSlug, projectSlug, serviceSlug);
   const nodes = useQuery(nodesQuery(workspaceSlug));
   const deployments = useQuery(
     serviceDeploymentsQuery(workspaceSlug, projectSlug, serviceSlug),
@@ -140,6 +143,8 @@ export function DomainsSection({
               onUpdatePort={(port) =>
                 updateDomain.mutateAsync({ id: d.id, container_port: port })
               }
+              onRetry={() => retry.mutate(d.id)}
+              retrying={retry.isPending && retry.variables === d.id}
               onDelete={() => del.mutate(d.id)}
               deleting={del.isPending && del.variables === d.id}
             />
@@ -271,7 +276,11 @@ function DnsRecordPreview({
           : 'Deploy the service first — a node IP is needed before DNS can point anywhere.'}
       </p>
       {cloudflare.detected ? (
-        <CloudflareConnect apex={cloudflare.apex} />
+        <CloudflareConnect
+          apex={cloudflare.apex}
+          recordName={recordName}
+          nodeIp={nodeIp}
+        />
       ) : null}
     </div>
   );
@@ -304,6 +313,8 @@ function DomainRow({
   canManage,
   nodeIp,
   onUpdatePort,
+  onRetry,
+  retrying,
   onDelete,
   deleting,
 }: {
@@ -311,11 +322,14 @@ function DomainRow({
   canManage: boolean;
   nodeIp: string | null;
   onUpdatePort: (port: number) => Promise<DomainSummary>;
+  onRetry: () => void;
+  retrying: boolean;
   onDelete: () => void;
   deleting: boolean;
 }) {
   const meta = TLS_META[domain.tls_status];
   const needsSetup = domain.tls_status !== 'active';
+  const canRetry = canManage && domain.tls_status !== 'active';
 
   return (
     <Card className="group p-4">
@@ -348,8 +362,11 @@ function DomainRow({
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-3">
+        <div className="flex shrink-0 items-center gap-2">
           <StatusPill status={meta.status} label={meta.label} pulse={meta.pulse} />
+          {canRetry ? (
+            <RetryButton onClick={onRetry} pending={retrying} />
+          ) : null}
           {canManage ? (
             <ConfirmDelete onConfirm={onDelete} pending={deleting} />
           ) : null}
@@ -362,11 +379,37 @@ function DomainRow({
             <PendingHelp hostname={domain.hostname} nodeIp={nodeIp} />
           ) : null}
           {domain.tls_status === 'failed' && domain.last_error ? (
-            <p className="text-xs text-red-400">{domain.last_error}</p>
+            <Stack gap={2}>
+              <p className="text-xs text-red-400">{domain.last_error}</p>
+              <PendingHelp hostname={domain.hostname} nodeIp={nodeIp} />
+            </Stack>
           ) : null}
         </div>
       ) : null}
     </Card>
+  );
+}
+
+function RetryButton({
+  onClick,
+  pending,
+}: {
+  onClick: () => void;
+  pending: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={pending}
+      title="Re-check DNS and re-issue the certificate"
+      className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--color-border)] px-2 text-xs text-[var(--color-muted)] hover:border-[var(--color-border-strong)] hover:text-[var(--color-fg)] disabled:opacity-60"
+    >
+      <RefreshCw
+        className={['h-3 w-3', pending ? 'animate-spin' : ''].join(' ')}
+      />
+      {pending ? 'Retrying…' : 'Retry'}
+    </button>
   );
 }
 
@@ -390,7 +433,11 @@ function PendingHelp({
         {nodeIp ? <CopyBtn value={nodeIp} /> : null}
       </div>
       {cloudflare.detected ? (
-        <CloudflareConnect apex={cloudflare.apex} />
+        <CloudflareConnect
+          apex={cloudflare.apex}
+          recordName={name}
+          nodeIp={nodeIp}
+        />
       ) : null}
     </div>
   );
@@ -620,26 +667,75 @@ function apexDomain(host: string): string {
   return parts.slice(-2).join('.');
 }
 
-function CloudflareConnect({ apex }: { apex: string }) {
+function CloudflareConnect({
+  apex,
+  recordName,
+  nodeIp,
+}: {
+  apex: string;
+  recordName: string;
+  nodeIp: string | null;
+}) {
   const url = `https://dash.cloudflare.com/?to=/:account/${encodeURIComponent(apex)}/dns/records`;
+  // Cloudflare doesn't accept deeplink params for new DNS records, so the
+  // best we can do is land the user on the right zone's DNS page and copy
+  // the IP onto their clipboard so paste-into-content is one keystroke.
+  function handleConnect(e: React.MouseEvent<HTMLAnchorElement>) {
+    if (nodeIp) {
+      void navigator.clipboard.writeText(nodeIp).catch(() => {
+        // Clipboard API can fail in cross-origin iframes; the new tab still opens.
+      });
+    }
+    // Let the default open-in-new-tab behavior run.
+    void e;
+  }
+
   return (
-    <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-xs">
-      <div className="flex min-w-0 items-center gap-2">
-        <CloudflareMark className="h-4 w-auto shrink-0" />
-        <span className="text-[var(--color-fg)]">
-          Cloudflare detected on{' '}
-          <span className="font-mono">{apex}</span>
-        </span>
+    <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <CloudflareMark className="h-4 w-auto shrink-0" />
+          <span className="text-[var(--color-fg)]">
+            Cloudflare detected on{' '}
+            <span className="font-mono">{apex}</span>
+          </span>
+        </div>
+        <a
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+          onClick={handleConnect}
+          className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 font-medium text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
+        >
+          Connect
+          <ExternalLink className="h-3 w-3" />
+        </a>
       </div>
-      <a
-        href={url}
-        target="_blank"
-        rel="noreferrer"
-        className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 font-medium text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
-      >
-        Connect
-        <ExternalLink className="h-3 w-3" />
-      </a>
+      <div className="mt-2.5 grid grid-cols-[auto_1fr_auto] items-center gap-x-3 gap-y-1 font-mono text-[11px]">
+        <span className="text-[var(--color-muted)]">type</span>
+        <span className="text-[var(--color-fg)]">A</span>
+        <span />
+
+        <span className="text-[var(--color-muted)]">name</span>
+        <span className="text-[var(--color-fg)]">{recordName || '—'}</span>
+        {recordName ? <CopyBtn value={recordName} /> : <span />}
+
+        <span className="text-[var(--color-muted)]">content</span>
+        <span className="text-[var(--color-fg)]">{nodeIp ?? '—'}</span>
+        {nodeIp ? <CopyBtn value={nodeIp} /> : <span />}
+
+        <span className="text-[var(--color-muted)]">proxy</span>
+        <span className="text-[var(--color-fg)]">DNS only (gray cloud)</span>
+        <span />
+      </div>
+      <p className="mt-2 text-[11px] leading-relaxed text-[var(--color-muted)]">
+        Connect copies the IP to your clipboard. In Cloudflare, click{' '}
+        <span className="font-mono text-[var(--color-fg)]">Add record</span>,
+        pick <span className="font-mono text-[var(--color-fg)]">A</span>, paste
+        the values above, and turn the orange cloud{' '}
+        <span className="font-mono text-[var(--color-fg)]">off</span> so Caddy
+        can issue its own cert.
+      </p>
     </div>
   );
 }

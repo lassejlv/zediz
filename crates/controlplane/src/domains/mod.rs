@@ -82,6 +82,115 @@ pub fn validate_hostname(h: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Probe a single domain right now and write the result back. Used by the
+/// `retry` route so an admin doesn't have to wait for the next scheduler
+/// tick to see whether their DNS fix took.
+pub async fn probe_one(pool: &DatabaseConnection, domain_id: &str) -> Result<()> {
+    let row: Option<(String, bool, Option<String>)> = crate::db::query_tuple(
+        "SELECT sd.hostname, \
+                EXISTS(SELECT 1 FROM deployments d \
+                       WHERE d.service_id = sd.service_id AND d.status = 'running') AS has_running, \
+                (SELECT n.public_ipv4 \
+                 FROM deployments d \
+                 JOIN nodes n ON n.id = d.node_id \
+                 WHERE d.service_id = sd.service_id \
+                       AND d.status = 'running' \
+                       AND n.public_ipv4 IS NOT NULL \
+                 ORDER BY d.updated_at DESC \
+                 LIMIT 1) AS expected_ip \
+         FROM service_domains sd \
+         WHERE sd.id = $1",
+    )
+    .bind(domain_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((hostname, has_running, expected_ip)) = row else {
+        return Ok(());
+    };
+
+    if !has_running {
+        crate::db::query(
+            "UPDATE service_domains SET \
+                tls_status = 'pending', \
+                last_error = NULL, \
+                updated_at = now() \
+             WHERE id = $1",
+        )
+        .bind(domain_id)
+        .execute(pool)
+        .await?;
+        return Ok(());
+    }
+
+    let Some(expected_ip) = expected_ip else {
+        mark_failed(pool, domain_id, "running deployment has no public node IP").await?;
+        return Ok(());
+    };
+
+    let http = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .timeout(Duration::from_secs(5))
+        .build()?;
+
+    apply_probe_result(pool, &http, domain_id, &hostname, &expected_ip).await
+}
+
+async fn apply_probe_result(
+    pool: &DatabaseConnection,
+    http: &reqwest::Client,
+    domain_id: &str,
+    hostname: &str,
+    expected_ip: &str,
+) -> Result<()> {
+    let resolved_ips = match resolve_hostname(hostname).await {
+        Ok(ips) => ips,
+        Err(err) => {
+            mark_failed(pool, domain_id, &format!("DNS lookup failed: {err}")).await?;
+            return Ok(());
+        }
+    };
+    if resolved_ips.is_empty() {
+        mark_failed(
+            pool,
+            domain_id,
+            &format!("DNS does not resolve yet; expected A record to {expected_ip}"),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    if !resolved_ips.iter().any(|ip| ip == expected_ip) {
+        mark_failed(
+            pool,
+            domain_id,
+            &format!(
+                "DNS resolves to {}, but this service is running on {expected_ip}",
+                resolved_ips.join(", ")
+            ),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    match probe_hostname(http, hostname).await {
+        Ok(()) => {
+            crate::db::query(
+                "UPDATE service_domains SET \
+                    tls_status = 'active', \
+                    last_error = NULL, \
+                    last_cert_at = COALESCE(last_cert_at, now()), \
+                    updated_at = now() \
+                 WHERE id = $1",
+            )
+            .bind(domain_id)
+            .execute(pool)
+            .await?;
+        }
+        Err(err) => mark_failed(pool, domain_id, &format!("HTTPS probe failed: {err}")).await?,
+    }
+    Ok(())
+}
+
 /// Refresh `service_domains.tls_status` by probing each hostname over HTTPS.
 /// A domain is only considered probeable once its service has a running
 /// deployment; until then it stays `pending`.
@@ -132,52 +241,7 @@ pub async fn refresh_tls_statuses(pool: &DatabaseConnection) -> Result<()> {
             }
         };
 
-        let resolved_ips = match resolve_hostname(&hostname).await {
-            Ok(ips) => ips,
-            Err(err) => {
-                mark_failed(pool, &id, &format!("DNS lookup failed: {err}")).await?;
-                continue;
-            }
-        };
-        if resolved_ips.is_empty() {
-            mark_failed(
-                pool,
-                &id,
-                &format!("DNS does not resolve yet; expected A record to {expected_ip}"),
-            )
-            .await?;
-            continue;
-        }
-
-        if !resolved_ips.iter().any(|ip| ip == &expected_ip) {
-            mark_failed(
-                pool,
-                &id,
-                &format!(
-                    "DNS resolves to {}, but this service is running on {expected_ip}",
-                    resolved_ips.join(", ")
-                ),
-            )
-            .await?;
-            continue;
-        }
-
-        match probe_hostname(&http, &hostname).await {
-            Ok(()) => {
-                crate::db::query(
-                    "UPDATE service_domains SET \
-                        tls_status = 'active', \
-                        last_error = NULL, \
-                        last_cert_at = COALESCE(last_cert_at, now()), \
-                        updated_at = now() \
-                     WHERE id = $1",
-                )
-                .bind(&id)
-                .execute(pool)
-                .await?;
-            }
-            Err(err) => mark_failed(pool, &id, &format!("HTTPS probe failed: {err}")).await?,
-        }
+        apply_probe_result(pool, &http, &id, &hostname, &expected_ip).await?;
     }
 
     Ok(())

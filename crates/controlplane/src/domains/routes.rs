@@ -1,5 +1,5 @@
 use axum::extract::{Path, State};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use driftbase_common::Id;
@@ -20,6 +20,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/workspaces/:slug/projects/:project_slug/services/:service_slug/domains/:id",
             axum::routing::patch(update).delete(delete),
+        )
+        .route(
+            "/workspaces/:slug/projects/:project_slug/services/:service_slug/domains/:id/retry",
+            post(retry),
         )
 }
 
@@ -232,6 +236,61 @@ async fn update(
         .map_err(ApiError::Internal)?;
 
     Ok(Json(DomainSummary::try_from(row)?))
+}
+
+async fn retry(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((slug, project_slug, service_slug, id)): Path<(String, String, String, String)>,
+) -> ApiResult<Json<DomainSummary>> {
+    let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
+    membership::require(&ctx, Role::Member)?;
+    let (service_id, _) = resolve_service(
+        state.pool(),
+        &ctx.workspace_id,
+        &project_slug,
+        &service_slug,
+    )
+    .await?;
+
+    // Reset to pending up-front so the row reflects the in-flight retry even
+    // if the synchronous probe takes a moment.
+    let row: Option<DomainRow> = crate::db::query_as(
+        "UPDATE service_domains SET \
+            tls_status = 'pending', \
+            last_error = NULL, \
+            updated_at = now() \
+         WHERE id = $1 AND service_id = $2 \
+         RETURNING id, service_id, hostname, container_port, tls_status, \
+                   last_error, last_cert_at, created_at",
+    )
+    .bind(&id)
+    .bind(service_id.to_string())
+    .fetch_optional(state.pool())
+    .await?;
+    let row = row.ok_or(ApiError::NotFound)?;
+
+    // Re-push routes — clears any stale Caddy config that might have been
+    // mid-failover when the prior probe ran.
+    crate::scheduler::push_routes_for_service(state.pool(), &service_id.to_string())
+        .await
+        .map_err(ApiError::Internal)?;
+
+    // Probe synchronously so the response reflects the live result.
+    domains::probe_one(state.pool(), &id)
+        .await
+        .map_err(ApiError::Internal)?;
+
+    let refreshed: Option<DomainRow> = crate::db::query_as(
+        "SELECT id, service_id, hostname, container_port, tls_status, \
+                last_error, last_cert_at, created_at \
+         FROM service_domains WHERE id = $1",
+    )
+    .bind(&id)
+    .fetch_optional(state.pool())
+    .await?;
+
+    DomainSummary::try_from(refreshed.unwrap_or(row)).map(Json)
 }
 
 async fn delete(

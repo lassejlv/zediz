@@ -1,8 +1,10 @@
 use anyhow::Result;
 use chrono::Utc;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
+use crate::cancel::Cancel;
 use crate::client::{
     CommandAck, ContainerMetricSample, ControlPlaneClient, HeartbeatBody, StatusBody,
 };
@@ -27,6 +29,10 @@ pub struct Executor {
     log_cursors: HashMap<String, i64>,
     /// Deployment ids currently running on this node — we scrape their logs.
     tracked: std::collections::HashSet<String>,
+    /// build_id → cancel signal for builds running in detached tasks. The
+    /// task itself removes the entry when it finishes; `handle_cancel_build`
+    /// flips the signal here so the build's kill path runs.
+    running_builds: Arc<tokio::sync::Mutex<HashMap<String, Cancel>>>,
 }
 
 impl Executor {
@@ -49,6 +55,7 @@ impl Executor {
             restart_after_ack: false,
             log_cursors: HashMap::new(),
             tracked: std::collections::HashSet::new(),
+            running_builds: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -294,14 +301,61 @@ impl Executor {
                 Ok(()) => ok(id),
                 Err(e) => err(id, e.to_string()),
             },
+            "cancel_build" => match self.handle_cancel_build(cmd).await {
+                Ok(()) => ok(id),
+                Err(e) => err(id, e.to_string()),
+            },
             other => err(id, format!("unsupported command kind: {other}")),
         }
     }
 
+    /// Builds run in a detached task: the heartbeat ack means "accepted",
+    /// not "finished". Detaching keeps the heartbeat loop responsive (so the
+    /// follow-up `cancel_build` can be processed) and lets the agent track
+    /// many concurrent builds in the future.
     async fn handle_build(&mut self, cmd: crate::client::Command) -> anyhow::Result<()> {
         let spec: crate::build::BuildSpec = serde_json::from_value(cmd.payload)
             .map_err(|e| anyhow::anyhow!("bad build payload: {e}"))?;
-        crate::build::run_build(&self.client, &self.node_token, spec).await
+        let build_id = spec.build_id.clone();
+        let cancel = Cancel::new();
+        {
+            let mut guard = self.running_builds.lock().await;
+            guard.insert(build_id.clone(), cancel.clone());
+        }
+
+        let client = self.client.clone();
+        let node_token = self.node_token.clone();
+        let registry = self.running_builds.clone();
+        let build_id_for_task = build_id.clone();
+        tokio::spawn(async move {
+            let res = crate::build::run_build(&client, &node_token, spec, cancel).await;
+            if let Err(e) = &res {
+                tracing::warn!(build = %build_id_for_task, error = ?e, "build task ended with error");
+            }
+            registry.lock().await.remove(&build_id_for_task);
+        });
+
+        Ok(())
+    }
+
+    async fn handle_cancel_build(&mut self, cmd: crate::client::Command) -> anyhow::Result<()> {
+        let build_id = cmd
+            .payload
+            .get("build_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("cancel_build missing build_id"))?
+            .to_string();
+        let cancel = self.running_builds.lock().await.remove(&build_id);
+        match cancel {
+            Some(c) => {
+                c.cancel();
+                Ok(())
+            }
+            // The build already finished (or this agent never picked it up);
+            // either way the control plane row is the source of truth, so
+            // ack success.
+            None => Ok(()),
+        }
     }
 
     async fn handle_sync_private_network(&mut self, cmd: crate::client::Command) -> Result<()> {

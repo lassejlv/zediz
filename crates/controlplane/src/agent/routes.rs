@@ -735,6 +735,13 @@ async fn build_status(
         return Err(ApiError::Unauthorized);
     }
 
+    // Drop late reports for builds the control plane already cancelled or
+    // resolved — otherwise an in-flight build that finishes after a cancel
+    // would flip the row back to `succeeded`/`failed`.
+    if crate::builds::is_terminal(&build.status) {
+        return Ok(());
+    }
+
     let terminal = matches!(update.status.as_str(), "succeeded" | "failed");
     crate::db::query(
         "UPDATE builds SET \

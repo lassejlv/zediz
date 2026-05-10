@@ -5,6 +5,7 @@ use std::time::Duration;
 
 mod build;
 mod caddy;
+mod cancel;
 mod client;
 mod docker;
 mod executor;

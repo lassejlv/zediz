@@ -96,6 +96,34 @@ export function useUpdateDomain(
   });
 }
 
+export function useRetryDomain(
+  workspaceSlug: string,
+  projectSlug: string,
+  serviceSlug: string,
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api<DomainSummary>(
+        `${base(workspaceSlug, projectSlug, serviceSlug)}/${encodeURIComponent(id)}/retry`,
+        { method: 'POST' },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({
+        queryKey: [
+          'workspace',
+          workspaceSlug,
+          'project',
+          projectSlug,
+          'service',
+          serviceSlug,
+          'domains',
+        ],
+      });
+    },
+  });
+}
+
 export function useDeleteDomain(
   workspaceSlug: string,
   projectSlug: string,

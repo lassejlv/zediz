@@ -123,3 +123,68 @@ pub async fn fetch_by_id(pool: &DatabaseConnection, build_id: &str) -> ApiResult
     .await?;
     row.ok_or(ApiError::NotFound)
 }
+
+pub fn is_terminal(status: &str) -> bool {
+    matches!(status, "succeeded" | "failed" | "cancelled")
+}
+
+/// Cancel an in-flight build:
+///   - flips the row to `cancelled` (no-op if already terminal),
+///   - errors the deployment that was waiting on it,
+///   - releases the build-time node reservation,
+///   - signals the agent to kill the running build process if it was dispatched.
+pub async fn cancel(
+    pool: &DatabaseConnection,
+    build: &BuildRow,
+    reason: &str,
+) -> ApiResult<()> {
+    if is_terminal(&build.status) {
+        return Ok(());
+    }
+
+    let updated = crate::db::query(
+        "UPDATE builds SET status = 'cancelled', reason = $1, \
+                            finished_at = now(), updated_at = now() \
+         WHERE id = $2 AND status NOT IN ('succeeded','failed','cancelled')",
+    )
+    .bind(reason)
+    .bind(&build.id)
+    .execute(pool)
+    .await?;
+    if updated.rows_affected() == 0 {
+        // Race: someone else marked it terminal between our read and write.
+        return Ok(());
+    }
+
+    if let Some(deployment_id) = build.deployment_id.as_deref() {
+        crate::db::query(
+            "UPDATE deployments SET status = 'errored', reason = $1, \
+                                     stopped_at = now(), updated_at = now() \
+             WHERE id = $2 AND status NOT IN ('running','stopped','errored')",
+        )
+        .bind(reason)
+        .bind(deployment_id)
+        .execute(pool)
+        .await?;
+        crate::db::query("DELETE FROM node_allocations WHERE deployment_id = $1")
+            .bind(deployment_id)
+            .execute(pool)
+            .await?;
+    }
+
+    if let Some(node_id) = build.node_id.as_deref() {
+        // Best-effort: if the agent never picks up the command, the build
+        // process keeps running but its eventual `succeeded`/`failed` report
+        // gets ignored because the row is already terminal.
+        let _ = crate::agent::commands::enqueue(
+            pool,
+            node_id,
+            build.deployment_id.as_deref(),
+            crate::agent::commands::CommandKind::CancelBuild,
+            serde_json::json!({ "build_id": build.id }),
+        )
+        .await;
+    }
+
+    Ok(())
+}

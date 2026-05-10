@@ -32,7 +32,12 @@ import { DomainsSection } from '@/components/domains-section';
 import { ServiceMetricsTab } from '@/components/service-metrics';
 import { ServiceSettingsTab } from '@/components/service-settings';
 import { ServiceVolumeTab } from '@/components/service-volume';
-import { buildsQuery, buildTone } from '@/lib/builds';
+import {
+  buildsQuery,
+  buildTone,
+  isBuildCancellable,
+  useCancelBuild,
+} from '@/lib/builds';
 import type { BuildSummary, DeploymentSummary, ServiceSummary } from '@/lib/types';
 
 export const Route = createFileRoute(
@@ -225,6 +230,7 @@ function ServicePage() {
           workspaceSlug={workspaceSlug}
           projectSlug={projectSlug}
           serviceSlug={serviceSlug}
+          canManage={canDeploy}
           onViewLogs={(deploymentId) => {
             setActiveDeploymentId(deploymentId);
             setTab('logs');
@@ -818,17 +824,20 @@ function BuildsTab({
   workspaceSlug,
   projectSlug,
   serviceSlug,
+  canManage,
   onViewLogs,
 }: {
   workspaceSlug: string;
   projectSlug: string;
   serviceSlug: string;
+  canManage: boolean;
   onViewLogs: (deploymentId: string) => void;
 }) {
   const builds = useQuery({
     ...buildsQuery(workspaceSlug, projectSlug, serviceSlug),
     refetchInterval: 3000,
   });
+  const cancel = useCancelBuild(workspaceSlug, projectSlug, serviceSlug);
 
   if (!builds.data || builds.data.length === 0) {
     return (
@@ -854,7 +863,14 @@ function BuildsTab({
         </thead>
         <tbody>
           {builds.data.map((b) => (
-            <BuildRow key={b.id} b={b} onViewLogs={onViewLogs} />
+            <BuildRow
+              key={b.id}
+              b={b}
+              canManage={canManage}
+              onViewLogs={onViewLogs}
+              onCancel={() => cancel.mutate(b.id)}
+              cancelling={cancel.isPending && cancel.variables === b.id}
+            />
           ))}
         </tbody>
       </table>
@@ -864,12 +880,19 @@ function BuildsTab({
 
 function BuildRow({
   b,
+  canManage,
   onViewLogs,
+  onCancel,
+  cancelling,
 }: {
   b: BuildSummary;
+  canManage: boolean;
   onViewLogs: (deploymentId: string) => void;
+  onCancel: () => void;
+  cancelling: boolean;
 }) {
   const tone = buildTone(b.status);
+  const cancellable = canManage && isBuildCancellable(b.status);
   return (
     <tr className="border-t border-[var(--color-border)]">
       <td className="px-4 py-2">
@@ -899,11 +922,22 @@ function BuildRow({
         {b.reason ? <span className="whitespace-pre-wrap break-words">{b.reason}</span> : '—'}
       </td>
       <td className="px-4 py-2 text-right">
-        {b.deployment_id ? (
-          <Button variant="secondary" onClick={() => onViewLogs(b.deployment_id!)}>
-            View logs
-          </Button>
-        ) : null}
+        <div className="flex items-center justify-end gap-2">
+          {cancellable ? (
+            <Button
+              variant="danger"
+              onClick={onCancel}
+              disabled={cancelling}
+            >
+              {cancelling ? 'Cancelling…' : 'Cancel'}
+            </Button>
+          ) : null}
+          {b.deployment_id ? (
+            <Button variant="secondary" onClick={() => onViewLogs(b.deployment_id!)}>
+              View logs
+            </Button>
+          ) : null}
+        </div>
       </td>
     </tr>
   );

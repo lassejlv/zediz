@@ -9,6 +9,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
+use crate::cancel::Cancel;
 use crate::client::{BuildStatusBody, ControlPlaneClient, LogLineOut};
 use crate::docker::RegistryAuth;
 
@@ -43,6 +44,7 @@ pub async fn run_build(
     client: &ControlPlaneClient,
     node_token: &str,
     spec: BuildSpec,
+    cancel: Cancel,
 ) -> Result<()> {
     let work = PathBuf::from(format!("/tmp/driftbase-build-{}", spec.build_id));
     // Idempotent cleanup: previous failed attempts may have left debris.
@@ -50,7 +52,7 @@ pub async fn run_build(
     tokio::fs::create_dir_all(&work).await?;
 
     // Always cleanup after ourselves, on success or failure.
-    let result = do_build(client, node_token, &spec, &work).await;
+    let result = do_build(client, node_token, &spec, &work, &cancel).await;
     let _ = tokio::fs::remove_dir_all(&work).await;
 
     // Best-effort docker logout (no-op if we never logged in).
@@ -64,6 +66,12 @@ pub async fn run_build(
     match result {
         Ok(()) => Ok(()),
         Err(e) => {
+            // Don't overwrite the control plane's `cancelled` row with a
+            // misleading `failed` — the cancel route already set the final
+            // state synchronously.
+            if cancel.is_cancelled() {
+                return Err(e);
+            }
             let reason = e.to_string();
             let body = BuildStatusBody {
                 status: "failed".into(),
@@ -83,7 +91,9 @@ async fn do_build(
     node_token: &str,
     spec: &BuildSpec,
     work: &Path,
+    cancel: &Cancel,
 ) -> Result<()> {
+    check_cancelled(cancel)?;
     // 1) Clone (status=cloning).
     client
         .report_build_status(
@@ -133,6 +143,7 @@ async fn do_build(
         &spec.deployment_id,
         &mut clone,
         "git-clone",
+        cancel,
     )
     .await?;
 
@@ -185,13 +196,15 @@ async fn do_build(
         )
         .await?;
 
+    check_cancelled(cancel)?;
+
     let meta_path = work.join("build-meta.json");
     match spec.builder.as_str() {
         "dockerfile" => {
-            build_with_dockerfile(client, node_token, spec, &build_cwd, &meta_path).await?;
+            build_with_dockerfile(client, node_token, spec, &build_cwd, &meta_path, cancel).await?;
         }
         "railpack" => {
-            build_with_railpack(client, node_token, spec, &build_cwd, &meta_path).await?;
+            build_with_railpack(client, node_token, spec, &build_cwd, &meta_path, cancel).await?;
         }
         other => bail!("unsupported builder: {other}"),
     }
@@ -223,6 +236,7 @@ async fn build_with_dockerfile(
     spec: &BuildSpec,
     cwd: &Path,
     meta_path: &Path,
+    cancel: &Cancel,
 ) -> Result<()> {
     let dockerfile = spec.dockerfile_path.as_deref().unwrap_or("Dockerfile");
     let mut cmd = Command::new("docker");
@@ -242,7 +256,15 @@ async fn build_with_dockerfile(
     .arg(".")
     .current_dir(cwd);
 
-    run_logged(client, node_token, &spec.deployment_id, &mut cmd, "buildx").await
+    run_logged(
+        client,
+        node_token,
+        &spec.deployment_id,
+        &mut cmd,
+        "buildx",
+        cancel,
+    )
+    .await
 }
 
 async fn build_with_railpack(
@@ -251,6 +273,7 @@ async fn build_with_railpack(
     spec: &BuildSpec,
     cwd: &Path,
     meta_path: &Path,
+    cancel: &Cancel,
 ) -> Result<()> {
     // Railpack's "custom frontend" workflow:
     //   1. `railpack prepare <dir>` writes a BuildKit-consumable plan.json
@@ -269,6 +292,7 @@ async fn build_with_railpack(
         &spec.deployment_id,
         &mut prepare,
         "railpack-prepare",
+        cancel,
     )
     .await?;
 
@@ -294,6 +318,7 @@ async fn build_with_railpack(
         &spec.deployment_id,
         &mut cmd,
         "railpack-build",
+        cancel,
     )
     .await
 }
@@ -352,8 +377,13 @@ async fn run_logged(
     deployment_id: &str,
     cmd: &mut Command,
     tag: &str,
+    cancel: &Cancel,
 ) -> Result<()> {
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    check_cancelled(cancel)?;
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped())
+        // Spawn into its own process group so kill_on_drop sweeps any child
+        // processes the build tool spawned (buildkitd helpers, etc).
+        .kill_on_drop(true);
     let mut child = cmd.spawn().with_context(|| format!("spawn {tag}"))?;
     let stdout = child
         .stdout
@@ -442,7 +472,20 @@ async fn run_logged(
         }
     });
 
-    let status = child.wait().await?;
+    let status = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => {
+            // SIGKILL the child so buildx/git stops chewing CPU + bandwidth.
+            // kill_on_drop above is the safety net; this path makes the kill
+            // synchronous so the caller doesn't return before the process
+            // is reaped.
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            let _ = pusher.await;
+            bail!("build cancelled");
+        }
+        res = child.wait() => res?,
+    };
     // Give the pusher a moment to drain — its receiver closes when both stream
     // tasks drop their senders, which happens once the child's pipes EOF.
     let _ = pusher.await;
@@ -453,6 +496,13 @@ async fn run_logged(
             bail!("{tag} exited with {status}");
         }
         bail!("{tag} exited with {status}: {detail}");
+    }
+    Ok(())
+}
+
+fn check_cancelled(cancel: &Cancel) -> Result<()> {
+    if cancel.is_cancelled() {
+        bail!("build cancelled");
     }
     Ok(())
 }

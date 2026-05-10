@@ -1,4 +1,9 @@
-import { queryOptions, useQuery } from '@tanstack/react-query';
+import {
+  queryOptions,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { api } from './api';
 import type { SemanticStatus } from '@/components/ui';
 import type { BuildStatus, BuildSummary } from './types';
@@ -34,6 +39,55 @@ export function useBuilds(
   serviceSlug: string,
 ) {
   return useQuery(buildsQuery(workspaceSlug, projectSlug, serviceSlug));
+}
+
+export function isBuildCancellable(status: BuildStatus | undefined): boolean {
+  if (!status) return false;
+  return !['succeeded', 'failed', 'cancelled'].includes(status);
+}
+
+export function useCancelBuild(
+  workspaceSlug: string,
+  projectSlug: string,
+  serviceSlug: string,
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (buildId: string) =>
+      api<BuildSummary>(
+        `/workspaces/${encodeURIComponent(workspaceSlug)}/projects/${encodeURIComponent(
+          projectSlug,
+        )}/services/${encodeURIComponent(serviceSlug)}/builds/${encodeURIComponent(
+          buildId,
+        )}/cancel`,
+        { method: 'POST' },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({
+        queryKey: [
+          'workspace',
+          workspaceSlug,
+          'project',
+          projectSlug,
+          'service',
+          serviceSlug,
+          'builds',
+        ],
+      });
+      // The cancel route also errors the deployment; invalidate that list too.
+      qc.invalidateQueries({
+        queryKey: [
+          'workspace',
+          workspaceSlug,
+          'project',
+          projectSlug,
+          'service',
+          serviceSlug,
+          'deployments',
+        ],
+      });
+    },
+  });
 }
 
 /** Map a build's lifecycle status to a UI tone + pulse flag. */
