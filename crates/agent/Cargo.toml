@@ -23,5 +23,7 @@ anyhow.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
 bollard.workspace = true
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+http.workspace = true
 driftbase-common.workspace = true
 driftbase-proto.workspace = true

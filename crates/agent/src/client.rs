@@ -23,6 +23,10 @@ impl ControlPlaneClient {
         }
     }
 
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
     pub async fn register(&self, input: RegisterInput<'_>) -> Result<RegisterResponse> {
         let body = serde_json::json!({
             "bootstrap_token": input.bootstrap_token,

@@ -13,6 +13,7 @@ mod agent_updates;
 mod auth;
 mod builds;
 mod config;
+mod console;
 mod credentials;
 mod crypto;
 mod db;
@@ -134,7 +135,8 @@ fn router(state: AppState) -> Router {
         .merge(deployments::routes::router())
         .merge(domains::routes::router())
         .merge(volumes::routes::router())
-        .merge(agent::routes::router());
+        .merge(agent::routes::router())
+        .merge(console::routes::router());
 
     // The registry proxy is mounted at the root (not under /api/v1) because
     // docker clients hit `<registry-host>/v2/...` verbatim and we can't

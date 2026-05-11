@@ -559,10 +559,7 @@ mod tests {
         assert_eq!(parsed.registry, "ghcr.io");
         assert_eq!(parsed.repository, "driftbase/agent");
         assert_eq!(parsed.reference, "latest");
-        assert_eq!(
-            parsed.name_without_reference,
-            "ghcr.io/driftbase/agent"
-        );
+        assert_eq!(parsed.name_without_reference, "ghcr.io/driftbase/agent");
     }
 
     #[test]

@@ -221,3 +221,34 @@ pub async fn authorize(
     row.ok_or(ApiError::NotFound)?;
     fetch_by_id(pool, deployment_id).await
 }
+
+/// Same as [`authorize`] but additionally requires the caller is at least
+/// a workspace admin. Used by sensitive operations like opening a shell
+/// inside a running container.
+pub async fn authorize_admin(
+    pool: &DatabaseConnection,
+    deployment_id: &str,
+    user_id: &Id,
+) -> ApiResult<DeploymentRow> {
+    let row: Option<(String, String)> = crate::db::query_tuple(
+        "SELECT w.id, m.role \
+         FROM deployments d \
+         JOIN services s ON s.id = d.service_id \
+         JOIN projects p ON p.id = s.project_id \
+         JOIN workspaces w ON w.id = p.workspace_id \
+         JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = $1 \
+         WHERE d.id = $2",
+    )
+    .bind(user_id.to_string())
+    .bind(deployment_id)
+    .fetch_optional(pool)
+    .await?;
+    let (_workspace_id, role) = row.ok_or(ApiError::NotFound)?;
+    let role: crate::workspaces::membership::Role = role.parse().map_err(ApiError::Validation)?;
+    if !role.at_least(crate::workspaces::membership::Role::Admin) {
+        return Err(ApiError::Forbidden(
+            "admin role required for console access".into(),
+        ));
+    }
+    fetch_by_id(pool, deployment_id).await
+}

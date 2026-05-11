@@ -133,11 +133,7 @@ pub fn is_terminal(status: &str) -> bool {
 ///   - errors the deployment that was waiting on it,
 ///   - releases the build-time node reservation,
 ///   - signals the agent to kill the running build process if it was dispatched.
-pub async fn cancel(
-    pool: &DatabaseConnection,
-    build: &BuildRow,
-    reason: &str,
-) -> ApiResult<()> {
+pub async fn cancel(pool: &DatabaseConnection, build: &BuildRow, reason: &str) -> ApiResult<()> {
     if is_terminal(&build.status) {
         return Ok(());
     }

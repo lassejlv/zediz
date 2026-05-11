@@ -380,7 +380,8 @@ async fn run_logged(
     cancel: &Cancel,
 ) -> Result<()> {
     check_cancelled(cancel)?;
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped())
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         // Spawn into its own process group so kill_on_drop sweeps any child
         // processes the build tool spawned (buildkitd helpers, etc).
         .kill_on_drop(true);

@@ -7,6 +7,7 @@ mod build;
 mod caddy;
 mod cancel;
 mod client;
+mod console;
 mod docker;
 mod executor;
 mod private_network;

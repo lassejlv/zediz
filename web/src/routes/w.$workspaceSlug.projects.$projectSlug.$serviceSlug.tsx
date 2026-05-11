@@ -29,6 +29,7 @@ import {
   type SemanticStatus,
 } from '@/components/ui';
 import { DomainsSection } from '@/components/domains-section';
+import { ServiceConsole } from '@/components/service-console';
 import { ServiceMetricsTab } from '@/components/service-metrics';
 import { ServiceSettingsTab } from '@/components/service-settings';
 import { ServiceVolumeTab } from '@/components/service-volume';
@@ -54,6 +55,7 @@ type Tab =
   | 'domains'
   | 'volume'
   | 'logs'
+  | 'console'
   | 'settings';
 
 function ServicePage() {
@@ -168,7 +170,7 @@ function ServicePage() {
         />
       ) : null}
 
-      <Tabs value={tab} onChange={setTab} />
+      <Tabs value={tab} onChange={setTab} showConsole={canDelete} />
 
       {tab === 'overview' ? (
         <OverviewTab
@@ -240,6 +242,14 @@ function ServicePage() {
 
       {tab === 'logs' ? (
         <LogsTab
+          deployments={deployments.data ?? []}
+          activeId={activeDeploymentId}
+          onSelect={(id) => setActiveDeploymentId(id)}
+        />
+      ) : null}
+
+      {tab === 'console' && canDelete ? (
+        <ConsoleTab
           deployments={deployments.data ?? []}
           activeId={activeDeploymentId}
           onSelect={(id) => setActiveDeploymentId(id)}
@@ -353,7 +363,15 @@ function SummaryStrip({
 
 /* ---------- tabs ---------- */
 
-function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
+function Tabs({
+  value,
+  onChange,
+  showConsole,
+}: {
+  value: Tab;
+  onChange: (t: Tab) => void;
+  showConsole: boolean;
+}) {
   const tabs: { id: Tab; label: string }[] = [
     { id: 'overview', label: 'Overview' },
     { id: 'metrics', label: 'Metrics' },
@@ -362,6 +380,7 @@ function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
     { id: 'domains', label: 'Domains' },
     { id: 'volume', label: 'Volume' },
     { id: 'logs', label: 'Logs' },
+    ...(showConsole ? [{ id: 'console' as const, label: 'Console' }] : []),
     { id: 'settings', label: 'Settings' },
   ];
   return (
@@ -732,6 +751,51 @@ function LogsTab({
         </label>
       </Card>
       {activeId ? <LogViewer deploymentId={activeId} /> : null}
+    </Stack>
+  );
+}
+
+/* ---------- console tab ---------- */
+
+function ConsoleTab({
+  deployments,
+  activeId,
+  onSelect,
+}: {
+  deployments: DeploymentSummary[];
+  activeId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const running = deployments.filter((d) => d.status === 'running');
+  if (running.length === 0) {
+    return (
+      <Card className="px-6 py-10 text-center text-sm text-[var(--color-muted)]">
+        No running deployments. Console requires a running container.
+      </Card>
+    );
+  }
+  const target =
+    activeId && running.some((d) => d.id === activeId) ? activeId : running[0].id;
+  return (
+    <Stack gap={3}>
+      <Card className="p-3">
+        <label className="flex items-center gap-3 text-xs">
+          <span className="text-[var(--color-muted)]">Deployment</span>
+          <select
+            value={target}
+            onChange={(e) => onSelect(e.target.value)}
+            className="flex-1 rounded-md border border-[var(--color-border)] bg-transparent px-2 py-1.5 text-xs focus:border-[var(--color-accent)] focus:outline-none"
+          >
+            {running.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.status} · {truncateImage(d.image_ref)} ·{' '}
+                {new Date(d.created_at).toLocaleString()}
+              </option>
+            ))}
+          </select>
+        </label>
+      </Card>
+      <ServiceConsole key={target} deploymentId={target} />
     </Stack>
   );
 }

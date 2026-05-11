@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
+use axum::extract::ws::WebSocket;
+use dashmap::DashMap;
 use sea_orm::DatabaseConnection;
+use tokio::sync::oneshot;
 
 use crate::config::Config;
 use crate::crypto::MasterKey;
@@ -18,6 +21,12 @@ pub struct Inner {
     pub master_key: MasterKey,
     pub scheduler: SchedulerHandle,
     pub rate_limiter: RateLimiter,
+    /// Console sessions waiting on the agent to dial back with the matching
+    /// `session_id`. The browser-side handler inserts a oneshot sender keyed
+    /// by `session_id`; the agent-side handler pops it and hands over its
+    /// upgraded `WebSocket`. The browser-side task removes its own entry on
+    /// timeout or early close via the `SessionGuard` RAII type.
+    pub console_sessions: Arc<DashMap<String, oneshot::Sender<WebSocket>>>,
 }
 
 impl AppState {
@@ -29,6 +38,7 @@ impl AppState {
                 master_key,
                 scheduler: SchedulerHandle::default(),
                 rate_limiter: RateLimiter::default(),
+                console_sessions: Arc::new(DashMap::new()),
             }),
         }
     }
@@ -51,5 +61,9 @@ impl AppState {
 
     pub fn rate_limiter(&self) -> &RateLimiter {
         &self.inner.rate_limiter
+    }
+
+    pub fn console_sessions(&self) -> &Arc<DashMap<String, oneshot::Sender<WebSocket>>> {
+        &self.inner.console_sessions
     }
 }

@@ -305,8 +305,65 @@ impl Executor {
                 Ok(()) => ok(id),
                 Err(e) => err(id, e.to_string()),
             },
+            "open_console" => match self.handle_open_console(cmd).await {
+                Ok(()) => ok(id),
+                Err(e) => err(id, e.to_string()),
+            },
             other => err(id, format!("unsupported command kind: {other}")),
         }
+    }
+
+    /// Console sessions run detached: we ack the command immediately so other
+    /// pending commands don't block on the (potentially long) shell session.
+    /// The detached task dials a WebSocket back to the control plane, opens a
+    /// docker exec with a PTY, and bridges the two until either side closes.
+    async fn handle_open_console(&mut self, cmd: crate::client::Command) -> anyhow::Result<()> {
+        #[derive(serde::Deserialize)]
+        struct Payload {
+            session_id: String,
+            container_name: String,
+            #[serde(default = "default_cols")]
+            cols: u16,
+            #[serde(default = "default_rows")]
+            rows: u16,
+        }
+        fn default_cols() -> u16 {
+            80
+        }
+        fn default_rows() -> u16 {
+            24
+        }
+
+        let p: Payload = serde_json::from_value(cmd.payload)
+            .map_err(|e| anyhow::anyhow!("bad open_console payload: {e}"))?;
+        let cp_base = self.client.base().to_string();
+        let node_token = self.node_token.clone();
+        let docker = self.docker.inner();
+        let session_id_log = p.session_id.clone();
+        let container_log = p.container_name.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) = crate::console::run_session(
+                cp_base,
+                node_token,
+                p.session_id,
+                p.container_name,
+                p.cols,
+                p.rows,
+                docker,
+            )
+            .await
+            {
+                tracing::warn!(
+                    session = %session_id_log,
+                    container = %container_log,
+                    error = ?e,
+                    "console session failed",
+                );
+            }
+        });
+
+        Ok(())
     }
 
     /// Builds run in a detached task: the heartbeat ack means "accepted",

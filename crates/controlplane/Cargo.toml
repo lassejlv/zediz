@@ -48,3 +48,4 @@ dotenvy.workspace = true
 driftbase-common.workspace = true
 driftbase-proto.workspace = true
 driftbase-hetzner.workspace = true
+dashmap = "6"

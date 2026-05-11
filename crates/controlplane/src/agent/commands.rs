@@ -22,6 +22,7 @@ pub enum CommandKind {
     CancelBuild,
     SyncPrivateNetwork,
     UpdateAgent,
+    OpenConsole,
 }
 
 impl CommandKind {
@@ -38,6 +39,7 @@ impl CommandKind {
             CommandKind::CancelBuild => "cancel_build",
             CommandKind::SyncPrivateNetwork => "sync_private_network",
             CommandKind::UpdateAgent => "update_agent",
+            CommandKind::OpenConsole => "open_console",
         }
     }
 }
