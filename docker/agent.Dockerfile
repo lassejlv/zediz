@@ -4,8 +4,7 @@
 FROM rust:1.94-bookworm AS builder
 WORKDIR /app
 
-COPY rust-toolchain.toml ./
-COPY Cargo.toml ./
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ ./crates/
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
