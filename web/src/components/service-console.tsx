@@ -56,6 +56,7 @@ export function ServiceConsole({ deploymentId }: { deploymentId: string }) {
     )}/console/ws?cols=${initialCols}&rows=${initialRows}`;
     const ws = new WebSocket(url);
     ws.binaryType = 'arraybuffer';
+    let opened = false;
 
     term.writeln('\x1b[2mConnecting to container…\x1b[0m');
 
@@ -69,6 +70,7 @@ export function ServiceConsole({ deploymentId }: { deploymentId: string }) {
 
     ws.onopen = () => {
       if (!isCurrent()) return;
+      opened = true;
       setConnState('open');
       term.focus();
     };
@@ -91,11 +93,19 @@ export function ServiceConsole({ deploymentId }: { deploymentId: string }) {
     ws.onerror = () => {
       if (!isCurrent()) return;
       setConnState('error');
+      latestError = opened
+        ? 'Console WebSocket connection failed.'
+        : 'Console WebSocket upgrade failed. Check that you are signed in and have workspace admin access.';
+      setErrorMsg(latestError);
     };
     ws.onclose = (ev) => {
       if (!isCurrent()) return;
-      setConnState('closed');
-      if (!latestError && ev.reason) setErrorMsg(ev.reason);
+      setConnState(latestError ? 'error' : 'closed');
+      if (!latestError && ev.reason) {
+        latestError = ev.reason;
+        setErrorMsg(ev.reason);
+        setConnState('error');
+      }
     };
 
     let resizeTimer: ReturnType<typeof setTimeout> | null = null;

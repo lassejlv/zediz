@@ -174,6 +174,8 @@ async fn reap_stale_deployments(state: &AppState) -> Result<()> {
 }
 
 async fn tick_once(state: &AppState) -> Result<()> {
+    cleanup_stale_allocations(state.pool()).await?;
+
     // Kick off queued builds first — their success flips the deployment back
     // to 'pending' and lets the same tick pick it up on the next pass.
     let queued = fetch_queued_builds(state.pool()).await?;
@@ -201,6 +203,18 @@ async fn tick_once(state: &AppState) -> Result<()> {
         }
     }
     refresh_idle_since(state.pool()).await?;
+    Ok(())
+}
+
+async fn cleanup_stale_allocations(pool: &DatabaseConnection) -> Result<()> {
+    crate::db::query(
+        "DELETE FROM node_allocations a \
+         USING deployments d \
+         WHERE a.deployment_id = d.id \
+           AND d.status IN ('stopped', 'errored')",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -794,6 +808,85 @@ fn fits(row: &NodeCapacity, need: &Resources) -> bool {
         && free_disk >= need.disk_mb as i64
 }
 
+async fn existing_capacity_wait_reason(
+    pool: &DatabaseConnection,
+    workspace_id: &str,
+    location: &str,
+    need: &Resources,
+) -> Result<Option<String>> {
+    #[derive(sea_orm::FromQueryResult)]
+    struct Candidate {
+        id: String,
+        status: String,
+        private_network_capable: bool,
+        wireguard_public_key: Option<String>,
+        wireguard_mesh_ip: Option<String>,
+        total_cpu_millis: i32,
+        total_memory_mb: i32,
+        total_disk_mb: i32,
+        used_cpu_millis: Option<i64>,
+        used_memory_mb: Option<i64>,
+        used_disk_mb: Option<i64>,
+    }
+
+    let rows: Vec<Candidate> = crate::db::query_as(
+        "SELECT n.id, n.status, n.private_network_capable, n.wireguard_public_key, \
+                n.wireguard_mesh_ip, n.total_cpu_millis, n.total_memory_mb, n.total_disk_mb, \
+                COALESCE(SUM(a.cpu_millis), 0)::bigint AS used_cpu_millis, \
+                COALESCE(SUM(a.memory_mb), 0)::bigint AS used_memory_mb, \
+                COALESCE(SUM(a.disk_mb), 0)::bigint AS used_disk_mb \
+         FROM nodes n \
+         LEFT JOIN node_allocations a ON a.node_id = n.id \
+         WHERE n.workspace_id = $1 \
+           AND n.hetzner_location = $2 \
+           AND n.status IN ('ready', 'provisioning') \
+         GROUP BY n.id \
+         ORDER BY CASE n.status WHEN 'ready' THEN 0 ELSE 1 END, n.created_at ASC",
+    )
+    .bind(workspace_id)
+    .bind(location)
+    .fetch_all(pool)
+    .await?;
+
+    for row in rows {
+        let total_fit = row.total_cpu_millis >= need.cpu_millis as i32
+            && row.total_memory_mb >= need.memory_mb as i32
+            && row.total_disk_mb >= need.disk_mb as i32;
+        if !total_fit {
+            continue;
+        }
+
+        if row.status == "provisioning" {
+            return Ok(Some(format!(
+                "waiting for existing provisioning node {} to register",
+                &row.id[..8.min(row.id.len())],
+            )));
+        }
+
+        let free_cpu = row.total_cpu_millis as i64 - row.used_cpu_millis.unwrap_or(0);
+        let free_mem = row.total_memory_mb as i64 - row.used_memory_mb.unwrap_or(0);
+        let free_disk = row.total_disk_mb as i64 - row.used_disk_mb.unwrap_or(0);
+        let capacity_fit = free_cpu >= need.cpu_millis as i64
+            && free_mem >= need.memory_mb as i64
+            && free_disk >= need.disk_mb as i64;
+        if !capacity_fit {
+            continue;
+        }
+
+        if !row.private_network_capable
+            || row.wireguard_public_key.is_none()
+            || row.wireguard_mesh_ip.is_none()
+        {
+            return Ok(Some(format!(
+                "waiting for private network readiness on existing node {}",
+                &row.id[..8.min(row.id.len())],
+            )));
+        }
+    }
+
+    Ok(None)
+}
+
 /// Make sure the Hetzner volume is attached to `target_node`. Detaches
 /// from a different node first if needed, then attaches. Updates the
 /// `volumes` row as each step completes so a crash mid-flow leaves a
@@ -933,13 +1026,35 @@ async fn place_and_run(state: &AppState, p: &PendingDeployment) -> Result<()> {
     let node = match picked {
         Some(n) => n,
         None => {
+            let placement_location = volume_location
+                .as_deref()
+                .unwrap_or(p.project_location.as_str());
+            if let Some(reason) = existing_capacity_wait_reason(
+                state.pool(),
+                &p.workspace_id,
+                placement_location,
+                &p.resources,
+            )
+            .await?
+            {
+                crate::private_network::sync_workspace(state.pool(), &p.workspace_id)
+                    .await
+                    .context("queueing private network sync for existing capacity")?;
+                crate::db::query(
+                    "UPDATE deployments SET status = 'placing', reason = $1, updated_at = now() \
+                     WHERE id = $2",
+                )
+                .bind(&reason)
+                .bind(&p.deployment_id)
+                .execute(state.pool())
+                .await?;
+                return Ok(());
+            }
             let outcome = try_provision_for(
                 state,
                 &p.workspace_id,
                 &p.resources,
-                volume_location
-                    .as_deref()
-                    .or(Some(p.project_location.as_str())),
+                Some(placement_location),
             )
             .await?;
             let reason = match outcome {
@@ -1319,7 +1434,7 @@ pub async fn push_routes_for_node(pool: &DatabaseConnection, node_id: &str) -> R
             "container_name": format!("driftbase-{}", r.deployment_id),
         })).collect::<Vec<_>>(),
     });
-    commands::enqueue(pool, node_id, None, CommandKind::UpdateRoutes, payload).await?;
+    commands::enqueue_coalesced(pool, node_id, None, CommandKind::UpdateRoutes, payload).await?;
     Ok(())
 }
 

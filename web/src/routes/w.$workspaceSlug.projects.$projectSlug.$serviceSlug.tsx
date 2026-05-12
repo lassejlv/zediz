@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
-import { Trash2 } from 'lucide-react';
+import { Loader2, Trash2 } from 'lucide-react';
 import {
   serviceQuery,
   serviceDeploymentsQuery,
@@ -15,6 +15,7 @@ import {
 } from '@/lib/deployments';
 import { canAdmin, canWrite, workspaceQuery } from '@/lib/workspaces';
 import { domainsQuery } from '@/lib/domains';
+import { serviceVolumeQuery } from '@/lib/volumes';
 import { ApiError } from '@/lib/api';
 import {
   Button,
@@ -67,13 +68,16 @@ function ServicePage() {
     refetchInterval: 3000,
   });
   const domains = useQuery(domainsQuery(workspaceSlug, projectSlug, serviceSlug));
+  const canDeploy = canWrite(workspace.data);
+  const canDelete = canAdmin(workspace.data);
+  const attachedVolume = useQuery({
+    ...serviceVolumeQuery(workspaceSlug, projectSlug, serviceSlug),
+    enabled: canDelete,
+  });
   const deploy = useDeployService(workspaceSlug, projectSlug, serviceSlug);
   const deleteService = useDeleteService(workspaceSlug, projectSlug);
   const stop = useStopDeployment();
   const restart = useRestartDeployment();
-
-  const canDeploy = canWrite(workspace.data);
-  const canDelete = canAdmin(workspace.data);
 
   const [error, setError] = useState<string | null>(null);
   const [activeDeploymentId, setActiveDeploymentId] = useState<string | null>(null);
@@ -93,6 +97,23 @@ function ServicePage() {
       setActiveDeploymentId(d.id);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Deploy failed');
+    }
+  }
+
+  async function onDeleteService() {
+    const volume = attachedVolume.data;
+    const message = volume
+      ? `Delete service ${serviceSlug} and attached volume ${volume.name}? The volume data will be permanently deleted.`
+      : `Delete service ${serviceSlug}? This cannot be undone.`;
+
+    if (!confirm(message)) return;
+
+    setError(null);
+    try {
+      await deleteService.mutateAsync(serviceSlug);
+      window.location.href = `/w/${workspaceSlug}/projects/${projectSlug}`;
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Delete failed');
     }
   }
 
@@ -134,25 +155,27 @@ function ServicePage() {
         actions={
           <>
             {canDeploy ? (
-              <Button onClick={onDeploy} disabled={deploy.isPending} title="⌘ ↵">
+              <Button
+                onClick={onDeploy}
+                disabled={deploy.isPending || deleteService.isPending}
+                title="⌘ ↵"
+              >
                 {deploy.isPending ? 'Deploying…' : deployLabel}
               </Button>
             ) : null}
             {canDelete ? (
               <Button
                 variant="danger"
-                onClick={async () => {
-                  if (!confirm(`Delete service ${serviceSlug}? This cannot be undone.`)) return;
-                  try {
-                    await deleteService.mutateAsync(serviceSlug);
-                    window.location.href = `/w/${workspaceSlug}/projects/${projectSlug}`;
-                  } catch (err) {
-                    setError(err instanceof ApiError ? err.message : 'Delete failed');
-                  }
-                }}
+                onClick={onDeleteService}
+                disabled={deleteService.isPending}
                 title="Delete service"
+                aria-label="Delete service"
               >
-                <Trash2 className="h-3.5 w-3.5" />
+                {deleteService.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3.5 w-3.5" />
+                )}
               </Button>
             ) : null}
           </>
@@ -160,6 +183,10 @@ function ServicePage() {
       />
 
       {error ? <ErrorText>{error}</ErrorText> : null}
+
+      {deleteService.isPending ? (
+        <DeleteProgress volumeName={attachedVolume.data?.name ?? null} />
+      ) : null}
 
       {svc ? (
         <SummaryStrip
@@ -797,6 +824,28 @@ function ConsoleTab({
       </Card>
       <ServiceConsole key={target} deploymentId={target} />
     </Stack>
+  );
+}
+
+function DeleteProgress({ volumeName }: { volumeName: string | null }) {
+  return (
+    <div className="rounded-lg border border-red-500/30 bg-red-500/[0.08] px-4 py-3">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-red-500/30 bg-red-500/10">
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-red-300" />
+        </div>
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-red-100">
+            {volumeName ? 'Deleting service and attached volume' : 'Deleting service'}
+          </div>
+          <p className="mt-1 text-xs leading-5 text-red-200/80">
+            {volumeName
+              ? `Removing ${volumeName}, detaching it from Hetzner if needed, then deleting the service. Keep this page open until the project view returns.`
+              : 'Stopping related work, removing service records, then returning to the project view.'}
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }
 

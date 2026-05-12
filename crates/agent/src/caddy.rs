@@ -3,11 +3,10 @@ use bollard::container::{
     Config, CreateContainerOptions, InspectContainerOptions, RemoveContainerOptions,
 };
 use bollard::image::CreateImageOptions;
-use bollard::models::{HostConfig, PortBinding, RestartPolicy, RestartPolicyNameEnum};
+use bollard::models::{HostConfig, RestartPolicy, RestartPolicyNameEnum};
 use bollard::Docker;
 use futures::StreamExt;
 use serde_json::{json, Value as JsonValue};
-use std::collections::HashMap;
 use std::time::Duration;
 
 /// Name of the shared docker network all deployments + the Caddy sidecar join
@@ -33,8 +32,12 @@ pub async fn ensure_network(docker: &Docker) -> Result<()> {
     Ok(())
 }
 
-/// Ensure the Caddy sidecar container is running and joined to the shared
-/// network. Idempotent — safe to call on every tick.
+/// Ensure the Caddy sidecar container is running in the host network.
+///
+/// Edge routes dial project-private and WireGuard IPs. Running Caddy in a
+/// Docker bridge makes those routes depend on container namespace forwarding
+/// and NAT quirks; host networking lets Caddy use the routes the agent installs
+/// on the node itself.
 pub async fn ensure_running(docker: &Docker) -> Result<()> {
     ensure_network(docker).await?;
 
@@ -44,7 +47,11 @@ pub async fn ensure_running(docker: &Docker) -> Result<()> {
         .await
     {
         let running = inspect.state.and_then(|s| s.running).unwrap_or(false);
-        if running {
+        let network_mode = inspect
+            .host_config
+            .and_then(|host| host.network_mode)
+            .unwrap_or_default();
+        if running && network_mode == "host" {
             return Ok(());
         }
         // Dead/stopped — remove and recreate.
@@ -78,39 +85,8 @@ pub async fn ensure_running(docker: &Docker) -> Result<()> {
         }
     }
 
-    // Publish 80/443 on the host + expose admin API on localhost.
-    let mut port_bindings: HashMap<String, Option<Vec<PortBinding>>> = HashMap::new();
-    for p in ["80", "443"] {
-        for proto in ["tcp", "udp"] {
-            // Only bind UDP on 443 (HTTP/3). 80/udp isn't useful.
-            if p == "80" && proto == "udp" {
-                continue;
-            }
-            port_bindings.insert(
-                format!("{p}/{proto}"),
-                Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".into()),
-                    host_port: Some(p.to_string()),
-                }]),
-            );
-        }
-    }
-    port_bindings.insert(
-        "2019/tcp".into(),
-        Some(vec![PortBinding {
-            host_ip: Some("127.0.0.1".into()),
-            host_port: Some("2019".into()),
-        }]),
-    );
-
-    let mut exposed: HashMap<String, HashMap<(), ()>> = HashMap::new();
-    for k in ["80/tcp", "443/tcp", "443/udp", "2019/tcp"] {
-        exposed.insert(k.into(), HashMap::new());
-    }
-
     let host_config = HostConfig {
-        port_bindings: Some(port_bindings),
-        network_mode: Some(NETWORK.into()),
+        network_mode: Some("host".into()),
         restart_policy: Some(RestartPolicy {
             name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
             ..Default::default()
@@ -123,20 +99,19 @@ pub async fn ensure_running(docker: &Docker) -> Result<()> {
     };
 
     // Bootstrap script: on first boot write a minimal config with the admin
-    // API bound to 0.0.0.0 (so Docker port binding can actually reach it);
+    // API bound to 127.0.0.1 in the host network;
     // on subsequent boots --resume picks up /config/caddy/autosave.json that
     // Caddy persists every time we POST /load.
     let bootstrap = r#"set -eu
 mkdir -p /etc/caddy
 cat > /etc/caddy/bootstrap.json <<'JSON'
-{"admin":{"listen":"0.0.0.0:2019"},"apps":{"http":{"servers":{"driftbase":{"listen":[":80",":443"],"routes":[]}}}}}
+{"admin":{"listen":"127.0.0.1:2019"},"apps":{"http":{"servers":{"driftbase":{"listen":[":80",":443"],"routes":[]}}}}}
 JSON
 exec caddy run --config /etc/caddy/bootstrap.json --resume
 "#;
 
     let config: Config<String> = Config {
         image: Some(CADDY_IMAGE.into()),
-        exposed_ports: Some(exposed),
         host_config: Some(host_config),
         entrypoint: Some(vec!["sh".into(), "-c".into(), bootstrap.to_string()]),
         ..Default::default()
@@ -239,7 +214,7 @@ fn build_config(routes: &[Route]) -> JsonValue {
     // IMPORTANT: include `admin.listen` in every /load so we don't drop the
     // admin API and lock ourselves out of future route pushes.
     json!({
-        "admin": { "listen": "0.0.0.0:2019" },
+        "admin": { "listen": "127.0.0.1:2019" },
         "apps": {
             "http": {
                 "servers": {

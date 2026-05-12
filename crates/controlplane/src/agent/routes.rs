@@ -344,21 +344,27 @@ async fn heartbeat(
     }
 
     for ack in req.acks {
-        let kind: Option<(String,)> = crate::db::query_tuple(
-            "SELECT kind FROM agent_commands WHERE id = $1 AND node_id = $2",
+        #[derive(sea_orm::FromQueryResult)]
+        struct AckedCommand {
+            kind: String,
+            payload: serde_json::Value,
+        }
+
+        let command: Option<AckedCommand> = crate::db::query_as(
+            "SELECT kind, payload FROM agent_commands WHERE id = $1 AND node_id = $2",
         )
         .bind(&ack.command_id)
         .bind(&claims.node_id)
         .fetch_optional(state.pool())
         .await?;
-        if kind.is_none() {
+        let Some(command) = command else {
             tracing::warn!(
                 node = %claims.node_id,
                 command = %ack.command_id,
                 "ignoring ack for command not owned by node",
             );
             continue;
-        }
+        };
         let acked = commands::mark_acked(
             state.pool(),
             &claims.node_id,
@@ -370,7 +376,18 @@ async fn heartbeat(
         if !acked {
             continue;
         }
-        if kind.as_ref().map(|(kind,)| kind.as_str()) == Some("sync_private_network") {
+        if command.kind == "open_console" && !ack.ok {
+            if let Some(session_id) = command.payload.get("session_id").and_then(|v| v.as_str()) {
+                crate::console::routes::fail_session(
+                    &state,
+                    session_id,
+                    ack.message
+                        .clone()
+                        .unwrap_or_else(|| "agent rejected console command".to_string()),
+                );
+            }
+        }
+        if command.kind == "sync_private_network" {
             if ack.ok {
                 crate::db::query(
                     "UPDATE nodes SET private_network_synced_at = now(), \
@@ -380,6 +397,15 @@ async fn heartbeat(
                 .bind(&claims.node_id)
                 .execute(state.pool())
                 .await?;
+                if let Err(e) =
+                    crate::scheduler::push_routes_for_node(state.pool(), &claims.node_id).await
+                {
+                    tracing::warn!(
+                        error = ?e,
+                        node = %claims.node_id,
+                        "push_routes_for_node after private network sync",
+                    );
+                }
             } else {
                 crate::db::query("UPDATE nodes SET private_network_sync_error = $1 WHERE id = $2")
                     .bind(ack.message.as_deref())
@@ -388,7 +414,7 @@ async fn heartbeat(
                     .await?;
             }
         }
-        if kind.as_ref().map(|(kind,)| kind.as_str()) == Some("update_agent") {
+        if command.kind == "update_agent" {
             crate::agent_updates::record_update_ack(
                 state.pool(),
                 &claims.node_id,

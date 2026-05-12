@@ -10,6 +10,11 @@ use crate::crypto::MasterKey;
 use crate::rate_limit::RateLimiter;
 use crate::scheduler::SchedulerHandle;
 
+pub enum ConsoleAgentConnection {
+    Connected(Box<WebSocket>),
+    Failed(String),
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub inner: Arc<Inner>,
@@ -26,7 +31,7 @@ pub struct Inner {
     /// by `session_id`; the agent-side handler pops it and hands over its
     /// upgraded `WebSocket`. The browser-side task removes its own entry on
     /// timeout or early close via the `SessionGuard` RAII type.
-    pub console_sessions: Arc<DashMap<String, oneshot::Sender<WebSocket>>>,
+    pub console_sessions: Arc<DashMap<String, oneshot::Sender<ConsoleAgentConnection>>>,
 }
 
 impl AppState {
@@ -63,7 +68,9 @@ impl AppState {
         &self.inner.rate_limiter
     }
 
-    pub fn console_sessions(&self) -> &Arc<DashMap<String, oneshot::Sender<WebSocket>>> {
+    pub fn console_sessions(
+        &self,
+    ) -> &Arc<DashMap<String, oneshot::Sender<ConsoleAgentConnection>>> {
         &self.inner.console_sessions
     }
 }

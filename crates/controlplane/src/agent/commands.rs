@@ -76,6 +76,42 @@ pub async fn enqueue(
     Ok(id)
 }
 
+pub async fn enqueue_coalesced(
+    pool: &DatabaseConnection,
+    node_id: &str,
+    deployment_id: Option<&str>,
+    kind: CommandKind,
+    payload: JsonValue,
+) -> Result<Id> {
+    let kind_str = kind.as_str();
+    let updated: Option<(String,)> = crate::db::query_tuple(
+        "UPDATE agent_commands \
+         SET payload = $1, result = NULL, created_at = now() \
+         WHERE id = ( \
+             SELECT id FROM agent_commands \
+             WHERE node_id = $2 \
+               AND kind = $3 \
+               AND deployment_id IS NOT DISTINCT FROM $4 \
+               AND status = 'pending' \
+             ORDER BY created_at DESC \
+             LIMIT 1 \
+         ) \
+         RETURNING id",
+    )
+    .bind(payload.clone())
+    .bind(node_id)
+    .bind(kind_str)
+    .bind(deployment_id)
+    .fetch_optional(pool)
+    .await?;
+
+    if let Some((id,)) = updated {
+        return id.parse().map_err(|e| anyhow!("invalid command id: {e}"));
+    }
+
+    enqueue(pool, node_id, deployment_id, kind, payload).await
+}
+
 /// Returns the up-to-`limit` pending commands for a node and marks them `dispatched`.
 pub async fn claim_for_node(
     pool: &DatabaseConnection,

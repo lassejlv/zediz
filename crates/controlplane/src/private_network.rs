@@ -182,7 +182,7 @@ pub async fn sync_workspace(pool: &DatabaseConnection, workspace_id: &str) -> Re
     let nodes = mesh_nodes(pool, workspace_id).await?;
     for node in &nodes {
         let payload = build_sync_payload(pool, workspace_id, node, &nodes).await?;
-        commands::enqueue(
+        commands::enqueue_coalesced(
             pool,
             &node.id,
             None,

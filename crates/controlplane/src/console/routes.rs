@@ -15,7 +15,7 @@ use crate::auth::AuthUser;
 use crate::console::bridge;
 use crate::deployments;
 use crate::error::{ApiError, ApiResult};
-use crate::state::AppState;
+use crate::state::{AppState, ConsoleAgentConnection};
 
 const SESSION_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTAINER_PREFIX: &str = "driftbase-";
@@ -57,7 +57,7 @@ async fn open_browser_ws(
     let container_name = format!("{CONTAINER_PREFIX}{deployment_id}");
     let session_id = Ulid::new().to_string();
 
-    let (tx, rx) = oneshot::channel::<WebSocket>();
+    let (tx, rx) = oneshot::channel::<ConsoleAgentConnection>();
     state.console_sessions().insert(session_id.clone(), tx);
 
     commands::enqueue(
@@ -91,8 +91,11 @@ async fn open_browser_ws(
                 session_id: session_id.clone(),
             };
             match tokio::time::timeout(SESSION_TIMEOUT, rx).await {
-                Ok(Ok(agent_ws)) => {
-                    bridge::run(browser_ws, agent_ws).await;
+                Ok(Ok(ConsoleAgentConnection::Connected(agent_ws))) => {
+                    bridge::run(browser_ws, *agent_ws).await;
+                }
+                Ok(Ok(ConsoleAgentConnection::Failed(reason))) => {
+                    let _ = close_with_reason(browser_ws, &reason).await;
                 }
                 Ok(Err(_)) => {
                     let _ = close_with_reason(browser_ws, "agent did not connect").await;
@@ -126,7 +129,7 @@ async fn close_with_reason(mut ws: WebSocket, reason: &str) -> Result<(), axum::
 }
 
 struct SessionGuard {
-    registry: std::sync::Arc<dashmap::DashMap<String, oneshot::Sender<WebSocket>>>,
+    registry: std::sync::Arc<dashmap::DashMap<String, oneshot::Sender<ConsoleAgentConnection>>>,
     session_id: String,
 }
 
@@ -150,11 +153,20 @@ async fn open_agent_ws(
     Ok(ws
         .max_message_size(8 * 1024 * 1024)
         .on_upgrade(move |agent_ws| async move {
-            if sender.send(agent_ws).is_err() {
+            if sender
+                .send(ConsoleAgentConnection::Connected(Box::new(agent_ws)))
+                .is_err()
+            {
                 tracing::debug!(
                     %session_id,
                     "browser side dropped before agent connected",
                 );
             }
         }))
+}
+
+pub fn fail_session(state: &AppState, session_id: &str, reason: String) {
+    if let Some((_, sender)) = state.console_sessions().remove(session_id) {
+        let _ = sender.send(ConsoleAgentConnection::Failed(reason));
+    }
 }
