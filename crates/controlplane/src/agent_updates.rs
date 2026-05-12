@@ -555,16 +555,19 @@ mod tests {
 
     #[test]
     fn parses_ghcr_tag_ref() {
-        let parsed = parse_image_ref("ghcr.io/driftbase/agent:latest").unwrap();
+        let parsed = parse_image_ref("ghcr.io/lassejlv/driftbase-agent:latest").unwrap();
         assert_eq!(parsed.registry, "ghcr.io");
-        assert_eq!(parsed.repository, "driftbase/agent");
+        assert_eq!(parsed.repository, "lassejlv/driftbase-agent");
         assert_eq!(parsed.reference, "latest");
-        assert_eq!(parsed.name_without_reference, "ghcr.io/driftbase/agent");
+        assert_eq!(
+            parsed.name_without_reference,
+            "ghcr.io/lassejlv/driftbase-agent"
+        );
     }
 
     #[test]
     fn parses_digest_ref() {
-        let parsed = parse_image_ref("ghcr.io/driftbase/agent@sha256:abc123").unwrap();
+        let parsed = parse_image_ref("ghcr.io/lassejlv/driftbase-agent@sha256:abc123").unwrap();
         assert_eq!(parsed.registry, "ghcr.io");
         assert_eq!(parsed.reference, "sha256:abc123");
         assert_eq!(parsed.digest.as_deref(), Some("sha256:abc123"));

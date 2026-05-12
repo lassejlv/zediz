@@ -59,7 +59,7 @@ impl RegistryAuth {
 }
 
 const PREFIX: &str = "driftbase-";
-const DEFAULT_HOST_MOUNT_HELPER_IMAGE: &str = "ghcr.io/driftbase/agent:latest";
+const DEFAULT_HOST_MOUNT_HELPER_IMAGE: &str = "ghcr.io/lassejlv/driftbase-agent:latest";
 
 #[derive(Clone)]
 pub struct DockerExec {

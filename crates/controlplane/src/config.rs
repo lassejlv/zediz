@@ -4,7 +4,7 @@ use anyhow::{anyhow, Context, Result};
 
 use crate::crypto::MasterKey;
 
-pub const DEFAULT_AGENT_IMAGE: &str = "ghcr.io/driftbase/agent:latest";
+pub const DEFAULT_AGENT_IMAGE: &str = "ghcr.io/lassejlv/driftbase-agent:latest";
 
 #[derive(Clone, Debug)]
 pub struct Config {

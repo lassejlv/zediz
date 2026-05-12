@@ -1,6 +1,6 @@
 services:
   controlplane:
-    image: ${DRIFTBASE_CONTROLPLANE_IMAGE:-ghcr.io/driftbase/controlplane:latest}
+    image: ${DRIFTBASE_CONTROLPLANE_IMAGE:-ghcr.io/lassejlv/driftbase-controlplane:latest}
     build:
       context: .
       dockerfile: Dockerfile.controlplane
@@ -14,7 +14,7 @@ services:
       DRIFTBASE_MASTER_KEY: ${DRIFTBASE_MASTER_KEY:?DRIFTBASE_MASTER_KEY is required}
       DRIFTBASE_PUBLIC_URL: ${DRIFTBASE_PUBLIC_URL:-https://driftbase.app}
       DRIFTBASE_COOKIE_SECURE: "true"
-      DRIFTBASE_AGENT_IMAGE: ${DRIFTBASE_AGENT_IMAGE:-ghcr.io/driftbase/agent:latest}
+      DRIFTBASE_AGENT_IMAGE: ${DRIFTBASE_AGENT_IMAGE:-ghcr.io/lassejlv/driftbase-agent:latest}
       # Bundled registry plumbing; empty disables the auth proxy + the
       # credential-create `username = id` override.
       DRIFTBASE_REGISTRY_SITE: ${REGISTRY_SITE:-registry.driftbase.app}
@@ -26,7 +26,7 @@ services:
       - driftbase
 
   web:
-    image: ${DRIFTBASE_WEB_IMAGE:-ghcr.io/driftbase/web:latest}
+    image: ${DRIFTBASE_WEB_IMAGE:-ghcr.io/lassejlv/driftbase-web:latest}
     build:
       context: .
       dockerfile: Dockerfile.web
