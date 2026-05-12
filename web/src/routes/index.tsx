@@ -52,6 +52,9 @@ function Landing() {
         <Link to="/signup">
           <Button variant="secondary">Create account</Button>
         </Link>
+        <Link to="/pricing">
+          <Button variant="ghost">Pricing</Button>
+        </Link>
       </div>
 
       <dl className="mx-auto mt-16 grid max-w-lg grid-cols-1 gap-6 text-left sm:grid-cols-3">
