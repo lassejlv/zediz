@@ -39,7 +39,6 @@ export const Route = createFileRoute('/w/$workspaceSlug/credentials')({
 });
 
 const KIND_LABEL: Record<CredentialKind, string> = {
-  hetzner_api_token: 'Hetzner API token',
   github_pat: 'GitHub PAT',
   registry: 'Registry',
 };
@@ -132,7 +131,7 @@ function CredentialsPage() {
       ) : (
         <EmptyState
           title="No credentials"
-          body="Add a Hetzner API token to provision nodes, or a registry credential to pull private images."
+          body="Add registry or GitHub credentials for private images and builds."
           cta={
             <Button onClick={() => setSheetOpen(true)}>
               <Plus className="mr-1 h-3.5 w-3.5" /> Add credential
@@ -178,7 +177,7 @@ function AddCredentialSheet({
   const settings = usePublicSettings();
   const bundledRegistryHost = settings.data?.registry_site ?? null;
 
-  const [kind, setKind] = useState<CredentialKind>('hetzner_api_token');
+  const [kind, setKind] = useState<CredentialKind>('registry');
   const [name, setName] = useState('');
   const [secret, setSecret] = useState('');
   const [registryUrl, setRegistryUrl] = useState('');
@@ -197,6 +196,7 @@ function AddCredentialSheet({
     setSecret('');
     setRegistryUrl('');
     setRegistryUsername('');
+    setKind('registry');
     setError(null);
   }
 
@@ -253,7 +253,6 @@ function AddCredentialSheet({
               value={kind}
               onChange={(e) => setKind(e.target.value as CredentialKind)}
             >
-              <option value="hetzner_api_token">Hetzner API token</option>
               <option value="github_pat">GitHub PAT</option>
               <option value="registry">Registry</option>
             </Select>

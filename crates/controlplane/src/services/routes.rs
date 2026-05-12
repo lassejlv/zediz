@@ -687,6 +687,7 @@ async fn delete(
     if let Some(volume) = crate::volumes::fetch_for_service(state.pool(), &service_id).await? {
         crate::volumes::delete_backing_volume_and_row(
             state.pool(),
+            state.config(),
             state.master_key(),
             &ctx.workspace_id.to_string(),
             &volume,

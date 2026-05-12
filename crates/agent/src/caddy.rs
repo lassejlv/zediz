@@ -193,10 +193,10 @@ pub async fn ensure_container_on_network(docker: &Docker, container: &str) -> Re
 pub struct Route {
     pub hostname: String,
     pub container_port: u16,
-    pub container_name: String,
+    pub upstream_host: String,
 }
 
-/// Push a new Caddy config describing the given hostname→container routes.
+/// Push a new Caddy config describing the given hostname→upstream routes.
 /// Uses Caddy's JSON API on the admin port. Caddy auto-issues Let's Encrypt
 /// certs for every hostname whose DNS already points here.
 pub async fn apply_routes(routes: &[Route]) -> Result<()> {
@@ -217,8 +217,8 @@ pub async fn apply_routes(routes: &[Route]) -> Result<()> {
 }
 
 fn build_config(routes: &[Route]) -> JsonValue {
-    // One route per hostname, reverse-proxying to the container on the
-    // shared docker network by container name at the configured port.
+    // One route per hostname, reverse-proxying to either a local Docker
+    // container name or a project-private IP on the WireGuard mesh.
     let routes_json: Vec<JsonValue> = routes
         .iter()
         .map(|r| {
@@ -227,7 +227,7 @@ fn build_config(routes: &[Route]) -> JsonValue {
                 "handle": [{
                     "handler": "reverse_proxy",
                     "upstreams": [{
-                        "dial": format!("{}:{}", r.container_name, r.container_port)
+                        "dial": format!("{}:{}", r.upstream_host, r.container_port)
                     }],
                     "flush_interval": -1,
                 }],

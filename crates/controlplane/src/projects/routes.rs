@@ -25,6 +25,7 @@ pub struct ProjectSummary {
     pub id: Id,
     pub slug: String,
     pub name: String,
+    pub hetzner_location: String,
     pub private_network_enabled: bool,
     pub private_network_domain: String,
     pub created_at: DateTime<Utc>,
@@ -35,6 +36,7 @@ struct ProjectRow {
     id: String,
     slug: String,
     name: String,
+    hetzner_location: String,
     private_network_domain: Option<String>,
     created_at: DateTime<Utc>,
 }
@@ -49,6 +51,7 @@ impl TryFrom<ProjectRow> for ProjectSummary {
                 .map_err(|e| ApiError::Internal(anyhow::anyhow!("{e}")))?,
             slug: r.slug,
             name: r.name,
+            hetzner_location: r.hetzner_location,
             private_network_enabled: true,
             private_network_domain: r
                 .private_network_domain
@@ -66,7 +69,8 @@ async fn list(
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
 
     let rows: Vec<ProjectRow> = crate::db::query_as(
-        "SELECT p.id, p.slug, p.name, pn.domain AS private_network_domain, p.created_at \
+        "SELECT p.id, p.slug, p.name, p.hetzner_location, \
+                pn.domain AS private_network_domain, p.created_at \
          FROM projects p \
          LEFT JOIN project_networks pn ON pn.project_id = p.id \
          WHERE p.workspace_id = $1 ORDER BY p.created_at DESC",
@@ -85,6 +89,7 @@ async fn list(
 pub struct CreateProjectRequest {
     pub slug: String,
     pub name: String,
+    pub hetzner_location: String,
 }
 
 async fn create(
@@ -102,19 +107,22 @@ async fn create(
     if name.is_empty() {
         return Err(ApiError::Validation("name is required".into()));
     }
+    let hetzner_location = req.hetzner_location.trim().to_lowercase();
+    validate_hetzner_location(&hetzner_location)?;
 
     let id = Id::new();
     let inserted: Option<ProjectRow> = crate::db::query_as(
-        "INSERT INTO projects (id, workspace_id, slug, name, created_by) \
-         VALUES ($1, $2, $3, $4, $5) \
+        "INSERT INTO projects (id, workspace_id, slug, name, created_by, hetzner_location) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
          ON CONFLICT (workspace_id, slug) DO NOTHING \
-         RETURNING id, slug, name, NULL::text AS private_network_domain, created_at",
+         RETURNING id, slug, name, hetzner_location, NULL::text AS private_network_domain, created_at",
     )
     .bind(id.to_string())
     .bind(ctx.workspace_id.to_string())
     .bind(&project_slug)
     .bind(&name)
     .bind(auth.user_id.to_string())
+    .bind(&hetzner_location)
     .fetch_optional(state.pool())
     .await?;
 
@@ -131,7 +139,8 @@ async fn show(
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
 
     let row: Option<ProjectRow> = crate::db::query_as(
-        "SELECT p.id, p.slug, p.name, pn.domain AS private_network_domain, p.created_at \
+        "SELECT p.id, p.slug, p.name, p.hetzner_location, \
+                pn.domain AS private_network_domain, p.created_at \
          FROM projects p \
          LEFT JOIN project_networks pn ON pn.project_id = p.id \
          WHERE p.workspace_id = $1 AND p.slug = $2",
@@ -143,6 +152,13 @@ async fn show(
 
     let row = row.ok_or(ApiError::NotFound)?;
     Ok(Json(ProjectSummary::try_from(row)?))
+}
+
+pub(crate) fn validate_hetzner_location(location: &str) -> ApiResult<()> {
+    if matches!(location, "nbg1" | "fsn1" | "hel1" | "ash" | "hil" | "sin") {
+        return Ok(());
+    }
+    Err(ApiError::Validation("unsupported Hetzner location".into()))
 }
 
 async fn delete(

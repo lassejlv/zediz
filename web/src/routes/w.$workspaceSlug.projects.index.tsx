@@ -15,6 +15,7 @@ import {
   ErrorText,
   Field,
   Input,
+  Select,
   PageHeader,
   EmptyState,
   Stack,
@@ -34,6 +35,15 @@ import {
 export const Route = createFileRoute('/w/$workspaceSlug/projects/')({
   component: ProjectsPage,
 });
+
+const LOCATIONS = [
+  { value: 'nbg1', label: 'Nuremberg, DE' },
+  { value: 'fsn1', label: 'Falkenstein, DE' },
+  { value: 'hel1', label: 'Helsinki, FI' },
+  { value: 'ash', label: 'Ashburn, US' },
+  { value: 'hil', label: 'Hillsboro, US' },
+  { value: 'sin', label: 'Singapore' },
+];
 
 function ProjectsPage() {
   const { workspaceSlug } = Route.useParams();
@@ -94,7 +104,7 @@ function ProjectsPage() {
               </div>
               <div className="flex items-center justify-between text-xs text-[var(--color-muted)]">
                 <span>
-                  Created <RelativeTime date={p.created_at} />
+                  {p.hetzner_location} · Created <RelativeTime date={p.created_at} />
                 </span>
                 <Link
                   to="/w/$workspaceSlug/projects/$projectSlug"
@@ -142,15 +152,17 @@ function NewProjectSheet({
   const create = useCreateProject(workspaceSlug);
   const [slug, setSlug] = useState('');
   const [name, setName] = useState('');
+  const [hetznerLocation, setHetznerLocation] = useState('nbg1');
   const [error, setError] = useState<string | null>(null);
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
     try {
-      await create.mutateAsync({ slug, name });
+      await create.mutateAsync({ slug, name, hetzner_location: hetznerLocation });
       setSlug('');
       setName('');
+      setHetznerLocation('nbg1');
       onOpenChange(false);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Something went wrong');
@@ -185,6 +197,24 @@ function NewProjectSheet({
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
+          </Field>
+          <Field
+            label="Region"
+            htmlFor="proj-location"
+            hint="Deployments in this project will run in this Hetzner region."
+          >
+            <Select
+              id="proj-location"
+              required
+              value={hetznerLocation}
+              onChange={(e) => setHetznerLocation(e.target.value)}
+            >
+              {LOCATIONS.map((location) => (
+                <option key={location.value} value={location.value}>
+                  {location.label} ({location.value})
+                </option>
+              ))}
+            </Select>
           </Field>
           {error ? <ErrorText>{error}</ErrorText> : null}
           <SheetFooter>

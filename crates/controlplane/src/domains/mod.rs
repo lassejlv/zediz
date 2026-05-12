@@ -8,25 +8,40 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::net::lookup_host;
 
-/// Hostnames currently pointing at a given node, derived from service_domains
-/// joined to running deployments on that node. One entry per live hostname.
+/// Hostnames currently served by a public edge node. Each route points at the
+/// active deployment's project-private IP, so the edge node does not need to be
+/// the node that runs the container.
 #[derive(Debug, Clone)]
 pub struct NodeRoute {
     pub hostname: String,
     pub container_port: u16,
     pub deployment_id: String,
-    pub container_name: String,
+    pub upstream_host: String,
 }
 
-/// Fetch the current live route set for a node: each service_domain whose
-/// service has a running deployment pinned to this node.
+/// Fetch the current live edge route set for a node. Every ready public node in
+/// the workspace gets every active domain route, and Caddy dials the workload
+/// over the project private network.
 pub async fn routes_for_node(pool: &DatabaseConnection, node_id: &str) -> Result<Vec<NodeRoute>> {
-    let rows: Vec<(String, i32, String)> = crate::db::query_tuple(
-        "SELECT sd.hostname, sd.container_port, d.id AS deployment_id \
-         FROM service_domains sd \
-         JOIN services s ON s.id = sd.service_id \
-         JOIN deployments d ON d.service_id = s.id \
-         WHERE d.node_id = $1 AND d.status = 'running' \
+    let rows: Vec<(String, i32, String, String)> = crate::db::query_tuple(
+        "SELECT sd.hostname, sd.container_port, active.id AS deployment_id, active.private_ipv4 \
+         FROM nodes edge \
+         JOIN projects p ON p.workspace_id = edge.workspace_id \
+         JOIN services s ON s.project_id = p.id \
+         JOIN service_domains sd ON sd.service_id = s.id \
+         JOIN LATERAL ( \
+             SELECT d.id, d.private_ipv4 \
+             FROM deployments d \
+             WHERE d.service_id = s.id \
+               AND d.status = 'running' \
+               AND d.private_ipv4 IS NOT NULL \
+             ORDER BY d.updated_at DESC \
+             LIMIT 1 \
+         ) active ON TRUE \
+         WHERE edge.id = $1 \
+           AND edge.status = 'ready' \
+           AND edge.public_ipv4 IS NOT NULL \
+           AND edge.private_network_capable = TRUE \
          ORDER BY sd.hostname ASC",
     )
     .bind(node_id)
@@ -35,27 +50,76 @@ pub async fn routes_for_node(pool: &DatabaseConnection, node_id: &str) -> Result
 
     Ok(rows
         .into_iter()
-        .map(|(hostname, container_port, deployment_id)| NodeRoute {
-            hostname,
-            container_port: container_port as u16,
-            container_name: format!("driftbase-{deployment_id}"),
-            deployment_id,
-        })
+        .map(
+            |(hostname, container_port, deployment_id, upstream_host)| NodeRoute {
+                hostname,
+                container_port: container_port as u16,
+                upstream_host,
+                deployment_id,
+            },
+        )
         .collect())
 }
 
-/// Return every node currently hosting a running deployment for the given
-/// service. These are the nodes whose Caddy needs updating when a domain on
-/// this service changes.
+/// Return every public, private-network-capable node in the service workspace.
+/// These are the edge nodes whose Caddy route table needs updating when a
+/// domain changes or a deployment rolls over.
 pub async fn nodes_for_service(pool: &DatabaseConnection, service_id: &str) -> Result<Vec<String>> {
     let rows: Vec<(String,)> = crate::db::query_tuple(
-        "SELECT DISTINCT d.node_id FROM deployments d \
-         WHERE d.service_id = $1 AND d.node_id IS NOT NULL AND d.status = 'running'",
+        "SELECT n.id \
+         FROM services s \
+         JOIN projects p ON p.id = s.project_id \
+         JOIN nodes n ON n.workspace_id = p.workspace_id \
+         WHERE s.id = $1 \
+           AND n.status = 'ready' \
+           AND n.public_ipv4 IS NOT NULL \
+           AND n.private_network_capable = TRUE \
+         ORDER BY n.created_at ASC",
     )
     .bind(service_id)
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(|(n,)| n).collect())
+}
+
+pub async fn edge_ips_for_service(
+    pool: &DatabaseConnection,
+    service_id: &str,
+) -> Result<Vec<String>> {
+    let rows: Vec<(String,)> = crate::db::query_tuple(
+        "SELECT n.public_ipv4 \
+         FROM services s \
+         JOIN projects p ON p.id = s.project_id \
+         JOIN nodes n ON n.workspace_id = p.workspace_id \
+         WHERE s.id = $1 \
+           AND n.status = 'ready' \
+           AND n.public_ipv4 IS NOT NULL \
+           AND n.private_network_capable = TRUE \
+         ORDER BY n.created_at ASC",
+    )
+    .bind(service_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(ip,)| ip).collect())
+}
+
+pub async fn edge_ips_for_workspace(
+    pool: &DatabaseConnection,
+    workspace_id: &str,
+) -> Result<Vec<String>> {
+    let rows: Vec<(String,)> = crate::db::query_tuple(
+        "SELECT public_ipv4 \
+         FROM nodes \
+         WHERE workspace_id = $1 \
+           AND status = 'ready' \
+           AND public_ipv4 IS NOT NULL \
+           AND private_network_capable = TRUE \
+         ORDER BY created_at ASC",
+    )
+    .bind(workspace_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(ip,)| ip).collect())
 }
 
 pub fn validate_hostname(h: &str) -> Result<(), String> {
@@ -86,25 +150,22 @@ pub fn validate_hostname(h: &str) -> Result<(), String> {
 /// `retry` route so an admin doesn't have to wait for the next scheduler
 /// tick to see whether their DNS fix took.
 pub async fn probe_one(pool: &DatabaseConnection, domain_id: &str) -> Result<()> {
-    let row: Option<(String, bool, Option<String>)> = crate::db::query_tuple(
+    let row: Option<(String, String, bool, bool)> = crate::db::query_tuple(
         "SELECT sd.hostname, \
+                sd.service_id, \
                 EXISTS(SELECT 1 FROM deployments d \
                        WHERE d.service_id = sd.service_id AND d.status = 'running') AS has_running, \
-                (SELECT n.public_ipv4 \
-                 FROM deployments d \
-                 JOIN nodes n ON n.id = d.node_id \
-                 WHERE d.service_id = sd.service_id \
-                       AND d.status = 'running' \
-                       AND n.public_ipv4 IS NOT NULL \
-                 ORDER BY d.updated_at DESC \
-                 LIMIT 1) AS expected_ip \
+                EXISTS(SELECT 1 FROM deployments d \
+                       WHERE d.service_id = sd.service_id \
+                         AND d.status = 'running' \
+                         AND d.private_ipv4 IS NOT NULL) AS has_private_running \
          FROM service_domains sd \
          WHERE sd.id = $1",
     )
     .bind(domain_id)
     .fetch_optional(pool)
     .await?;
-    let Some((hostname, has_running, expected_ip)) = row else {
+    let Some((hostname, service_id, has_running, has_private_running)) = row else {
         return Ok(());
     };
 
@@ -122,19 +183,30 @@ pub async fn probe_one(pool: &DatabaseConnection, domain_id: &str) -> Result<()>
         return Ok(());
     }
 
-    let Some(expected_ip) = expected_ip else {
-        mark_failed(pool, domain_id, "running deployment has no public node IP").await?;
+    if !has_private_running {
+        mark_failed(
+            pool,
+            domain_id,
+            "running deployment has no private network IP",
+        )
+        .await?;
         return Ok(());
-    };
+    }
 
-    apply_probe_result(pool, domain_id, &hostname, &expected_ip).await
+    let expected_ips = edge_ips_for_service(pool, &service_id).await?;
+    if expected_ips.is_empty() {
+        mark_failed(pool, domain_id, "no ready edge node public IP").await?;
+        return Ok(());
+    }
+
+    apply_probe_result(pool, domain_id, &hostname, &expected_ips).await
 }
 
 async fn apply_probe_result(
     pool: &DatabaseConnection,
     domain_id: &str,
     hostname: &str,
-    expected_ip: &str,
+    expected_ips: &[String],
 ) -> Result<()> {
     let resolved_ips = match resolve_hostname(hostname).await {
         Ok(ips) => ips,
@@ -147,26 +219,33 @@ async fn apply_probe_result(
         mark_failed(
             pool,
             domain_id,
-            &format!("DNS does not resolve yet; expected A record to {expected_ip}"),
-        )
-        .await?;
-        return Ok(());
-    }
-
-    if !resolved_ips.iter().any(|ip| ip == expected_ip) {
-        mark_failed(
-            pool,
-            domain_id,
             &format!(
-                "DNS resolves to {}, but this service is running on {expected_ip}",
-                resolved_ips.join(", ")
+                "DNS does not resolve yet; expected A record to {}",
+                expected_ips.join(" or ")
             ),
         )
         .await?;
         return Ok(());
     }
 
-    match probe_hostname(hostname, expected_ip).await {
+    let matched_ip = resolved_ips
+        .iter()
+        .find(|ip| expected_ips.iter().any(|expected| expected == *ip));
+    let Some(matched_ip) = matched_ip else {
+        mark_failed(
+            pool,
+            domain_id,
+            &format!(
+                "DNS resolves to {}, but this workspace edge is {}",
+                resolved_ips.join(", "),
+                expected_ips.join(" or ")
+            ),
+        )
+        .await?;
+        return Ok(());
+    };
+
+    match probe_hostname(hostname, matched_ip).await {
         Ok(()) => {
             crate::db::query(
                 "UPDATE service_domains SET \
@@ -189,25 +268,22 @@ async fn apply_probe_result(
 /// A domain is only considered probeable once its service has a running
 /// deployment; until then it stays `pending`.
 pub async fn refresh_tls_statuses(pool: &DatabaseConnection) -> Result<()> {
-    let rows: Vec<(String, String, bool, Option<String>)> = crate::db::query_tuple(
+    let rows: Vec<(String, String, String, bool, bool)> = crate::db::query_tuple(
         "SELECT sd.id, sd.hostname, \
+                sd.service_id, \
                 EXISTS(SELECT 1 FROM deployments d \
                        WHERE d.service_id = sd.service_id AND d.status = 'running') AS has_running, \
-                (SELECT n.public_ipv4 \
-                 FROM deployments d \
-                 JOIN nodes n ON n.id = d.node_id \
-                 WHERE d.service_id = sd.service_id \
-                       AND d.status = 'running' \
-                       AND n.public_ipv4 IS NOT NULL \
-                 ORDER BY d.updated_at DESC \
-                 LIMIT 1) AS expected_ip \
+                EXISTS(SELECT 1 FROM deployments d \
+                       WHERE d.service_id = sd.service_id \
+                         AND d.status = 'running' \
+                         AND d.private_ipv4 IS NOT NULL) AS has_private_running \
          FROM service_domains sd \
          ORDER BY sd.created_at ASC",
     )
     .fetch_all(pool)
     .await?;
 
-    for (id, hostname, has_running, expected_ip) in rows {
+    for (id, hostname, service_id, has_running, has_private_running) in rows {
         if !has_running {
             crate::db::query(
                 "UPDATE service_domains SET \
@@ -222,15 +298,18 @@ pub async fn refresh_tls_statuses(pool: &DatabaseConnection) -> Result<()> {
             continue;
         }
 
-        let expected_ip = match expected_ip {
-            Some(ip) => ip,
-            None => {
-                mark_failed(pool, &id, "running deployment has no public node IP").await?;
-                continue;
-            }
-        };
+        if !has_private_running {
+            mark_failed(pool, &id, "running deployment has no private network IP").await?;
+            continue;
+        }
 
-        apply_probe_result(pool, &id, &hostname, &expected_ip).await?;
+        let expected_ips = edge_ips_for_service(pool, &service_id).await?;
+        if expected_ips.is_empty() {
+            mark_failed(pool, &id, "no ready edge node public IP").await?;
+            continue;
+        }
+
+        apply_probe_result(pool, &id, &hostname, &expected_ips).await?;
     }
 
     Ok(())

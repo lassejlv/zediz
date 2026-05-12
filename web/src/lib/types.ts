@@ -14,11 +14,6 @@ export interface WorkspaceSummary {
   name: string;
   role: Role;
   created_at: string;
-  hetzner_location?: string | null;
-  default_server_type?: string | null;
-  max_nodes?: number | null;
-  max_monthly_euro?: number | null;
-  autoscale_idle_ttl_seconds?: number | null;
 }
 
 export interface MemberRow {
@@ -43,7 +38,7 @@ export interface CreatedInvite extends InviteSummary {
   accept_url: string;
 }
 
-export type CredentialKind = 'hetzner_api_token' | 'github_pat' | 'registry';
+export type CredentialKind = 'github_pat' | 'registry';
 
 export interface CredentialSummary {
   id: string;
@@ -69,6 +64,7 @@ export interface ProjectSummary {
   id: string;
   slug: string;
   name: string;
+  hetzner_location: string;
   private_network_enabled: boolean;
   private_network_domain: string;
   created_at: string;
@@ -208,6 +204,7 @@ export interface DomainSummary {
   last_error: string | null;
   last_cert_at: string | null;
   created_at: string;
+  edge_ips: string[];
 }
 
 export interface NodeSummary {

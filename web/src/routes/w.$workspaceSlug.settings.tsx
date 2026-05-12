@@ -5,7 +5,6 @@ import {
   canAdmin,
   workspaceQuery,
   useUpdateWorkspace,
-  type UpdateWorkspaceInput,
 } from '@/lib/workspaces';
 import { ApiError } from '@/lib/api';
 import { Button, Card, ErrorText, Field, Input, PageHeader, Stack } from '@/components/ui';
@@ -13,8 +12,6 @@ import { Button, Card, ErrorText, Field, Input, PageHeader, Stack } from '@/comp
 export const Route = createFileRoute('/w/$workspaceSlug/settings')({
   component: SettingsPage,
 });
-
-const LOCATIONS = ['nbg1', 'fsn1', 'hel1', 'ash', 'hil', 'sin'];
 
 function SettingsPage() {
   const { workspaceSlug } = Route.useParams();
@@ -24,38 +21,20 @@ function SettingsPage() {
   const canManage = canAdmin(ws.data);
 
   const [name, setName] = useState('');
-  const [location, setLocation] = useState('nbg1');
-  const [defaultServerType, setDefaultServerType] = useState('');
-  const [maxNodes, setMaxNodes] = useState('3');
-  const [maxMonthly, setMaxMonthly] = useState('50');
-  const [idleTtl, setIdleTtl] = useState('600');
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     if (!ws.data) return;
     setName(ws.data.name);
-    setLocation(ws.data.hetzner_location ?? 'nbg1');
-    setDefaultServerType(ws.data.default_server_type ?? '');
-    setMaxNodes(String(ws.data.max_nodes ?? 3));
-    setMaxMonthly(String(ws.data.max_monthly_euro ?? 50));
-    setIdleTtl(String(ws.data.autoscale_idle_ttl_seconds ?? 600));
   }, [ws.data]);
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
     setSaved(false);
-    const body: UpdateWorkspaceInput = {
-      name: name.trim() || undefined,
-      hetzner_location: location || undefined,
-      default_server_type: defaultServerType.trim() || undefined,
-      max_nodes: Number(maxNodes) || undefined,
-      max_monthly_euro: Number(maxMonthly),
-      autoscale_idle_ttl_seconds: Number(idleTtl) || undefined,
-    };
     try {
-      await update.mutateAsync(body);
+      await update.mutateAsync({ name: name.trim() || undefined });
       setSaved(true);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to save');
@@ -79,7 +58,7 @@ function SettingsPage() {
     <Stack gap={6}>
       <PageHeader
         title="Settings"
-        subtitle="Hetzner region, autoscale, and cost caps for this workspace."
+        subtitle="Workspace settings. Driftbase manages nodes and machine capacity."
       />
 
       <Card className="p-5">
@@ -92,64 +71,9 @@ function SettingsPage() {
             />
           </Field>
 
-          <Field label="Hetzner location" htmlFor="ws-location">
-            <select
-              id="ws-location"
-              value={location}
-              onChange={(e) => setLocation(e.target.value)}
-              className="h-9 w-full rounded-md border border-[var(--color-border)] bg-transparent px-2 text-sm focus:border-[var(--color-accent)] focus:outline-none"
-            >
-              {LOCATIONS.map((l) => (
-                <option key={l} value={l}>
-                  {l}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <Field
-            label="Default server type"
-            htmlFor="ws-server-type"
-            hint="Leave empty to auto-pick the cheapest fit per request."
-          >
-            <Input
-              id="ws-server-type"
-              placeholder="cx22"
-              value={defaultServerType}
-              onChange={(e) => setDefaultServerType(e.target.value)}
-            />
-          </Field>
-
-          <div className="grid grid-cols-3 gap-3">
-            <Field label="Max nodes" htmlFor="ws-max-nodes">
-              <Input
-                id="ws-max-nodes"
-                type="number"
-                min={1}
-                max={100}
-                value={maxNodes}
-                onChange={(e) => setMaxNodes(e.target.value)}
-              />
-            </Field>
-            <Field label="Max monthly €" htmlFor="ws-max-monthly">
-              <Input
-                id="ws-max-monthly"
-                type="number"
-                min={0}
-                value={maxMonthly}
-                onChange={(e) => setMaxMonthly(e.target.value)}
-              />
-            </Field>
-            <Field label="Idle TTL (s)" htmlFor="ws-idle-ttl">
-              <Input
-                id="ws-idle-ttl"
-                type="number"
-                min={60}
-                max={86400}
-                value={idleTtl}
-                onChange={(e) => setIdleTtl(e.target.value)}
-              />
-            </Field>
+          <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-elevated)] px-3 py-2 text-xs text-[var(--color-muted)]">
+            Regions are selected per project. Nodes, machine types, and autoscale
+            limits are controlled by Driftbase.
           </div>
 
           {error ? <ErrorText>{error}</ErrorText> : null}

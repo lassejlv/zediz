@@ -68,6 +68,7 @@ async fn list(
 ) -> ApiResult<Json<Vec<SshKeySummary>>> {
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
     membership::require(&ctx, Role::Admin)?;
+    require_ssh_keys_unavailable(state.pool(), &ctx.workspace_id.to_string()).await?;
 
     let rows: Vec<SshKeyRow> = crate::db::query_as(
         "SELECT id, name, public_key, fingerprint, \
@@ -101,6 +102,7 @@ async fn create(
 ) -> ApiResult<Json<SshKeySummary>> {
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
     membership::require(&ctx, Role::Admin)?;
+    require_ssh_keys_unavailable(state.pool(), &ctx.workspace_id.to_string()).await?;
 
     let name = req.name.trim().to_string();
     if name.is_empty() || name.len() > 80 {
@@ -152,6 +154,7 @@ async fn delete(
 ) -> ApiResult<()> {
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
     membership::require(&ctx, Role::Admin)?;
+    require_ssh_keys_unavailable(state.pool(), &ctx.workspace_id.to_string()).await?;
 
     let res = crate::db::query("DELETE FROM ssh_keys WHERE id = $1 AND workspace_id = $2")
         .bind(&id)
@@ -162,6 +165,16 @@ async fn delete(
         return Err(ApiError::NotFound);
     }
     Ok(())
+}
+
+async fn require_ssh_keys_unavailable(
+    pool: &sea_orm::DatabaseConnection,
+    workspace_id: &str,
+) -> ApiResult<()> {
+    let _ = (pool, workspace_id);
+    Err(ApiError::Forbidden(
+        "SSH keys are managed by Driftbase".into(),
+    ))
 }
 
 /// Compute the OpenSSH SHA256 fingerprint of a public key in `ssh-<alg> <base64> [comment]` form.

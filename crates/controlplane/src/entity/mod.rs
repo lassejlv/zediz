@@ -137,6 +137,7 @@ pub mod credentials {
         pub created_by: String,
         pub created_at: DateTimeUtc,
         pub updated_at: DateTimeUtc,
+        pub hetzner_location: String,
         pub last_used_at: Option<DateTimeUtc>,
     }
 

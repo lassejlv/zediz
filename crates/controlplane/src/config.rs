@@ -29,6 +29,10 @@ pub struct Config {
     /// Optional one-time installer secret required for the first platform-admin
     /// signup. If unset, first-signup bootstrap keeps its historical behavior.
     pub setup_token: Option<String>,
+    /// Hetzner API token used for Railway-like managed workspaces. In this
+    /// mode users do not connect their own Hetzner account; Driftbase owns
+    /// provisioning through this local control-plane secret.
+    pub managed_hetzner_api_token: Option<String>,
 }
 
 pub struct LoadedConfig {
@@ -69,6 +73,7 @@ impl Config {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| DEFAULT_AGENT_IMAGE.to_string());
         let setup_token = optional_env(&["DRIFTBASE_SETUP_TOKEN"]);
+        let managed_hetzner_api_token = optional_env(&["DRIFTBASE_MANAGED_HETZNER_API_TOKEN"]);
 
         Ok(LoadedConfig {
             config: Self {
@@ -81,6 +86,7 @@ impl Config {
                 registry_upstream,
                 agent_image,
                 setup_token,
+                managed_hetzner_api_token,
             },
             master_key,
         })

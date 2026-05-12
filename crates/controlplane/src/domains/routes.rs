@@ -37,6 +37,7 @@ pub struct DomainSummary {
     pub last_error: Option<String>,
     pub last_cert_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    pub edge_ips: Vec<String>,
 }
 
 #[derive(sea_orm::FromQueryResult)]
@@ -51,9 +52,8 @@ struct DomainRow {
     created_at: DateTime<Utc>,
 }
 
-impl TryFrom<DomainRow> for DomainSummary {
-    type Error = ApiError;
-    fn try_from(r: DomainRow) -> Result<Self, ApiError> {
+impl DomainSummary {
+    fn from_row(r: DomainRow, edge_ips: Vec<String>) -> Result<Self, ApiError> {
         Ok(Self {
             id: r
                 .id
@@ -69,6 +69,7 @@ impl TryFrom<DomainRow> for DomainSummary {
             last_error: r.last_error,
             last_cert_at: r.last_cert_at,
             created_at: r.created_at,
+            edge_ips,
         })
     }
 }
@@ -127,9 +128,11 @@ async fn list(
     .bind(service_id.to_string())
     .fetch_all(state.pool())
     .await?;
+    let edge_ips =
+        domains::edge_ips_for_workspace(state.pool(), &ctx.workspace_id.to_string()).await?;
 
     rows.into_iter()
-        .map(DomainSummary::try_from)
+        .map(|row| DomainSummary::from_row(row, edge_ips.clone()))
         .collect::<Result<Vec<_>, _>>()
         .map(Json)
 }
@@ -185,7 +188,9 @@ async fn create(
         .await
         .map_err(ApiError::Internal)?;
 
-    Ok(Json(DomainSummary::try_from(row)?))
+    let edge_ips =
+        domains::edge_ips_for_workspace(state.pool(), &ctx.workspace_id.to_string()).await?;
+    Ok(Json(DomainSummary::from_row(row, edge_ips)?))
 }
 
 #[derive(Deserialize)]
@@ -235,7 +240,9 @@ async fn update(
         .await
         .map_err(ApiError::Internal)?;
 
-    Ok(Json(DomainSummary::try_from(row)?))
+    let edge_ips =
+        domains::edge_ips_for_workspace(state.pool(), &ctx.workspace_id.to_string()).await?;
+    Ok(Json(DomainSummary::from_row(row, edge_ips)?))
 }
 
 async fn retry(
@@ -290,7 +297,9 @@ async fn retry(
     .fetch_optional(state.pool())
     .await?;
 
-    DomainSummary::try_from(refreshed.unwrap_or(row)).map(Json)
+    let edge_ips =
+        domains::edge_ips_for_workspace(state.pool(), &ctx.workspace_id.to_string()).await?;
+    DomainSummary::from_row(refreshed.unwrap_or(row), edge_ips).map(Json)
 }
 
 async fn delete(
@@ -320,9 +329,6 @@ async fn delete(
     crate::scheduler::push_routes_for_service(state.pool(), &service_id.to_string())
         .await
         .map_err(ApiError::Internal)?;
-
-    // Clean up node-level state we no longer need.
-    let _ = domains::nodes_for_service(state.pool(), &service_id.to_string()).await;
 
     Ok(())
 }

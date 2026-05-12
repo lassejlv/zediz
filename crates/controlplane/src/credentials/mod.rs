@@ -4,28 +4,17 @@ use anyhow::{anyhow, Context, Result};
 use sea_orm::DatabaseConnection;
 use serde_json::Value as JsonValue;
 
+use crate::config::Config;
 use crate::crypto::MasterKey;
 
-/// Decrypt and return the first Hetzner API token stored for `workspace_id`, if any.
-pub async fn first_hetzner_token(
+pub async fn hetzner_token_for_workspace(
     pool: &DatabaseConnection,
+    config: &Config,
     master_key: &MasterKey,
     workspace_id: &str,
 ) -> Result<Option<String>> {
-    let row: Option<(Vec<u8>,)> = crate::db::query_tuple(
-        "SELECT encrypted FROM credentials \
-         WHERE workspace_id = $1 AND kind = 'hetzner_api_token' \
-         ORDER BY created_at ASC LIMIT 1",
-    )
-    .bind(workspace_id)
-    .fetch_optional(pool)
-    .await?;
-    let Some((ct,)) = row else { return Ok(None) };
-    let pt = master_key
-        .decrypt(&ct)
-        .context("decrypting Hetzner token")?;
-    let s = String::from_utf8(pt).map_err(|e| anyhow!("token not utf8: {e}"))?;
-    Ok(Some(s))
+    let _ = (pool, master_key, workspace_id);
+    Ok(config.managed_hetzner_api_token.clone())
 }
 
 /// Decrypted view of a stored credential. Caller is expected to use the

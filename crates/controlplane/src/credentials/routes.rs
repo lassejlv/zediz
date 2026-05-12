@@ -3,7 +3,6 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use driftbase_common::Id;
-use driftbase_hetzner::HetznerClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
@@ -138,10 +137,9 @@ async fn create(
     }
 
     if matches!(req.kind, CredentialKind::HetznerApiToken) {
-        HetznerClient::new(req.secret.clone())
-            .ping()
-            .await
-            .map_err(|e| ApiError::Validation(format!("hetzner token rejected: {e}")))?;
+        return Err(ApiError::Forbidden(
+            "Hetzner is configured by the Driftbase control plane".into(),
+        ));
     }
 
     let encrypted = state
@@ -227,10 +225,9 @@ async fn rotate(
         .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("bad kind: {kind_str}")))?;
 
     if matches!(kind, CredentialKind::HetznerApiToken) {
-        HetznerClient::new(req.secret.clone())
-            .ping()
-            .await
-            .map_err(|e| ApiError::Validation(format!("hetzner token rejected: {e}")))?;
+        return Err(ApiError::Forbidden(
+            "Hetzner is configured by the Driftbase control plane".into(),
+        ));
     }
 
     let encrypted = state

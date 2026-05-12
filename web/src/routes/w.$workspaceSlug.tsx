@@ -8,10 +8,8 @@ import {
 import {
   LayoutDashboard,
   FolderKanban,
-  Server,
   Users,
   KeyRound,
-  Terminal,
   Settings as SettingsIcon,
   ChevronDown,
   type LucideIcon,
@@ -67,12 +65,6 @@ function WorkspaceLayout() {
               label="Projects"
               icon={FolderKanban}
             />
-            <SidebarLink
-              to="/w/$workspaceSlug/nodes"
-              params={{ workspaceSlug }}
-              label="Nodes"
-              icon={Server}
-            />
           </NavGroup>
           <NavGroup>
             <SidebarLink
@@ -86,12 +78,6 @@ function WorkspaceLayout() {
               params={{ workspaceSlug }}
               label="Credentials"
               icon={KeyRound}
-            />
-            <SidebarLink
-              to="/w/$workspaceSlug/ssh-keys"
-              params={{ workspaceSlug }}
-              label="SSH keys"
-              icon={Terminal}
             />
           </NavGroup>
           <NavGroup>
@@ -168,10 +154,8 @@ function SidebarLink({
   to:
     | '/w/$workspaceSlug'
     | '/w/$workspaceSlug/projects'
-    | '/w/$workspaceSlug/nodes'
     | '/w/$workspaceSlug/members'
     | '/w/$workspaceSlug/credentials'
-    | '/w/$workspaceSlug/ssh-keys'
     | '/w/$workspaceSlug/settings';
   params: { workspaceSlug: string };
   label: string;

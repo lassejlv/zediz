@@ -163,6 +163,9 @@ async fn reap_stale_deployments(state: &AppState) -> Result<()> {
                 tracing::warn!(error = ?e, node = %node_id, "push_routes_for_node after reap");
             }
         }
+        if let Err(e) = push_routes_for_service(state.pool(), &service_id).await {
+            tracing::warn!(error = ?e, service = %service_id, "push_routes_for_service after reap");
+        }
         if let Err(e) = crate::private_network::sync_for_service(state.pool(), &service_id).await {
             tracing::warn!(error = ?e, service = %service_id, "sync private network after reap");
         }
@@ -206,6 +209,7 @@ struct QueuedBuild {
     deployment_id: String,
     service_id: String,
     workspace_id: String,
+    project_location: String,
     git_repo: String,
     git_branch: String,
     builder: String,
@@ -223,6 +227,7 @@ async fn fetch_queued_builds(pool: &DatabaseConnection) -> Result<Vec<QueuedBuil
         deployment_id: Option<String>,
         service_id: String,
         workspace_id: String,
+        project_location: String,
         git_repo: Option<String>,
         git_branch: Option<String>,
         builder: String,
@@ -235,6 +240,7 @@ async fn fetch_queued_builds(pool: &DatabaseConnection) -> Result<Vec<QueuedBuil
 
     let rows: Vec<Row> = crate::db::query_as(
         "SELECT b.id AS build_id, b.deployment_id, s.id AS service_id, w.id AS workspace_id, \
+                p.hetzner_location AS project_location, \
                 s.git_repo, s.git_branch, s.builder, s.dockerfile_path, s.root_dir, \
                 s.registry_repo, s.github_credential_id, s.registry_credential_id \
          FROM builds b \
@@ -261,6 +267,7 @@ async fn fetch_queued_builds(pool: &DatabaseConnection) -> Result<Vec<QueuedBuil
             deployment_id,
             service_id: r.service_id,
             workspace_id: r.workspace_id,
+            project_location: r.project_location,
             git_repo,
             git_branch: r.git_branch.unwrap_or_else(|| "main".into()),
             builder: r.builder,
@@ -321,7 +328,7 @@ async fn dispatch_build(state: &AppState, b: QueuedBuild) -> Result<()> {
     // use) and leave the build queued so the next tick picks it up once the
     // node registers. Builds are NOT marked failed on "no node" — that's a
     // transient condition, not a hard error.
-    let node = match pick_builder_node(state.pool(), &b.workspace_id).await? {
+    let node = match pick_builder_node(state.pool(), &b.workspace_id, &b.project_location).await? {
         Some(n) => n,
         None => {
             let build_resources = Resources {
@@ -329,13 +336,19 @@ async fn dispatch_build(state: &AppState, b: QueuedBuild) -> Result<()> {
                 memory_mb: BUILD_MEMORY_MB,
                 disk_mb: BUILD_DISK_MB,
             };
-            let reason =
-                match try_provision_for(state, &b.workspace_id, &build_resources, None).await? {
-                    ProvisionOutcome::Provisioning => {
-                        "waiting for provisioned node to register".to_string()
-                    }
-                    ProvisionOutcome::Skipped(msg) => msg,
-                };
+            let reason = match try_provision_for(
+                state,
+                &b.workspace_id,
+                &build_resources,
+                Some(&b.project_location),
+            )
+            .await?
+            {
+                ProvisionOutcome::Provisioning => {
+                    "waiting for provisioned node to register".to_string()
+                }
+                ProvisionOutcome::Skipped(msg) => msg,
+            };
             crate::db::query(
                 "UPDATE builds SET reason = $1, updated_at = now() \
                  WHERE id = $2 AND status = 'queued'",
@@ -428,6 +441,7 @@ impl RegistryMeta {
 async fn pick_builder_node(
     pool: &DatabaseConnection,
     workspace_id: &str,
+    location: &str,
 ) -> Result<Option<NodeCapacity>> {
     // If the workspace has any node tagged `role=builder`, prefer those
     // exclusively. Otherwise any ready node will do.
@@ -439,12 +453,14 @@ async fn pick_builder_node(
          FROM nodes n \
          LEFT JOIN node_allocations a ON a.node_id = n.id \
          WHERE n.workspace_id = $1 AND n.status = 'ready' \
+         AND n.hetzner_location = $2 \
          AND ( \
              (n.labels->>'role') = 'builder' \
              OR NOT EXISTS ( \
                  SELECT 1 FROM nodes n2 \
                  WHERE n2.workspace_id = $1 \
                    AND n2.status = 'ready' \
+                   AND n2.hetzner_location = $2 \
                    AND (n2.labels->>'role') = 'builder' \
              ) \
          ) \
@@ -452,6 +468,7 @@ async fn pick_builder_node(
          ORDER BY n.created_at ASC",
     )
     .bind(workspace_id)
+    .bind(location)
     .fetch_all(pool)
     .await?;
 
@@ -513,6 +530,7 @@ struct PendingDeployment {
     project_id: String,
     service_slug: String,
     workspace_id: String,
+    project_location: String,
     image: String,
     env_vars: BTreeMap<String, String>,
     ports: Vec<PortMap>,
@@ -531,6 +549,7 @@ async fn fetch_pending(pool: &DatabaseConnection) -> Result<Vec<PendingDeploymen
         project_id: String,
         service_slug: String,
         workspace_id: String,
+        project_location: String,
         image: String,
         env: JsonValue,
         ports: JsonValue,
@@ -540,7 +559,8 @@ async fn fetch_pending(pool: &DatabaseConnection) -> Result<Vec<PendingDeploymen
 
     let rows: Vec<Row> = crate::db::query_as(
         "SELECT d.id AS deployment_id, d.service_id, p.id AS project_id, \
-                s.slug AS service_slug, w.id AS workspace_id, d.image_ref AS image, \
+                s.slug AS service_slug, w.id AS workspace_id, \
+                p.hetzner_location AS project_location, d.image_ref AS image, \
                 d.env_vars AS env, d.ports, d.resources, s.registry_credential_id \
          FROM deployments d \
          JOIN services s ON s.id = d.service_id \
@@ -567,6 +587,7 @@ async fn fetch_pending(pool: &DatabaseConnection) -> Result<Vec<PendingDeploymen
             project_id: r.project_id,
             service_slug: r.service_slug,
             workspace_id: r.workspace_id,
+            project_location: r.project_location,
             image: r.image,
             env_vars,
             ports,
@@ -594,6 +615,7 @@ struct NodeCapacity {
 async fn pick_node(
     pool: &DatabaseConnection,
     workspace_id: &str,
+    location: &str,
     need: &Resources,
 ) -> Result<Option<NodeCapacity>> {
     let rows: Vec<NodeCapacity> = crate::db::query_as(
@@ -604,6 +626,7 @@ async fn pick_node(
          FROM nodes n \
          LEFT JOIN node_allocations a ON a.node_id = n.id \
          WHERE n.workspace_id = $1 AND n.status = 'ready' \
+           AND n.hetzner_location = $2 \
            AND n.private_network_capable = TRUE \
            AND n.wireguard_public_key IS NOT NULL \
            AND n.wireguard_mesh_ip IS NOT NULL \
@@ -611,6 +634,7 @@ async fn pick_node(
          ORDER BY n.created_at ASC",
     )
     .bind(workspace_id)
+    .bind(location)
     .fetch_all(pool)
     .await?;
 
@@ -641,6 +665,7 @@ async fn pick_preferred_node_for_domains(
     service_id: &str,
     deployment_id: &str,
     workspace_id: &str,
+    location: &str,
     need: &Resources,
 ) -> Result<Option<NodeCapacity>> {
     let has_domains: Option<(bool,)> = crate::db::query_tuple(
@@ -680,6 +705,7 @@ async fn pick_preferred_node_for_domains(
          FROM nodes n \
          LEFT JOIN node_allocations a ON a.node_id = n.id \
          WHERE n.workspace_id = $1 AND n.status = 'ready' AND n.id = $2 \
+           AND n.hetzner_location = $3 \
            AND n.private_network_capable = TRUE \
            AND n.wireguard_public_key IS NOT NULL \
            AND n.wireguard_mesh_ip IS NOT NULL \
@@ -687,6 +713,7 @@ async fn pick_preferred_node_for_domains(
     )
     .bind(workspace_id)
     .bind(node_id)
+    .bind(location)
     .fetch_optional(pool)
     .await?;
 
@@ -784,10 +811,15 @@ async fn ensure_volume_attached(
         .hetzner_volume_id
         .ok_or_else(|| anyhow!("volume {} has no Hetzner id", volume.id))?;
 
-    let token = credentials::first_hetzner_token(state.pool(), state.master_key(), workspace_id)
-        .await
-        .context("loading Hetzner token for volume attach")?
-        .ok_or_else(|| anyhow!("workspace has no Hetzner API token"))?;
+    let token = credentials::hetzner_token_for_workspace(
+        state.pool(),
+        state.config(),
+        state.master_key(),
+        workspace_id,
+    )
+    .await
+    .context("loading Hetzner token for volume attach")?
+    .ok_or_else(|| anyhow!("managed Hetzner token is not configured"))?;
     let client = driftbase_hetzner::HetznerClient::new(&token);
 
     // Detach from the current node (if any) before attaching elsewhere.
@@ -880,12 +912,21 @@ async fn place_and_run(state: &AppState, p: &PendingDeployment) -> Result<()> {
             &p.service_id,
             &p.deployment_id,
             &p.workspace_id,
+            &p.project_location,
             &p.resources,
         )
         .await?
         {
             Some(node) => Some(node),
-            None => pick_node(state.pool(), &p.workspace_id, &p.resources).await?,
+            None => {
+                pick_node(
+                    state.pool(),
+                    &p.workspace_id,
+                    &p.project_location,
+                    &p.resources,
+                )
+                .await?
+            }
         }
     };
 
@@ -896,7 +937,9 @@ async fn place_and_run(state: &AppState, p: &PendingDeployment) -> Result<()> {
                 state,
                 &p.workspace_id,
                 &p.resources,
-                volume_location.as_deref(),
+                volume_location
+                    .as_deref()
+                    .or(Some(p.project_location.as_str())),
             )
             .await?;
             let reason = match outcome {
@@ -1138,23 +1181,27 @@ async fn try_provision_for(
     .await?;
     if current_nodes >= ws.max_nodes as i64 {
         return Ok(ProvisionOutcome::Skipped(format!(
-            "max_nodes reached ({current_nodes}/{cap}) — raise the cap in Settings",
+            "workspace node capacity reached ({current_nodes}/{cap})",
             cap = ws.max_nodes
         )));
     }
 
-    let token =
-        match credentials::first_hetzner_token(state.pool(), state.master_key(), workspace_id)
-            .await
-            .context("fetching Hetzner token")?
-        {
-            Some(t) => t,
-            None => {
-                return Ok(ProvisionOutcome::Skipped(
-                    "no Hetzner API token credential in this workspace".into(),
-                ));
-            }
-        };
+    let token = match credentials::hetzner_token_for_workspace(
+        state.pool(),
+        state.config(),
+        state.master_key(),
+        workspace_id,
+    )
+    .await
+    .context("fetching Hetzner token")?
+    {
+        Some(t) => t,
+        None => {
+            return Ok(ProvisionOutcome::Skipped(
+                "managed Hetzner token is not configured on this control plane".into(),
+            ));
+        }
+    };
 
     let ssh_key_ids = ssh_keys::ensure_on_hetzner(state.pool(), workspace_id, &token).await?;
 
@@ -1232,9 +1279,13 @@ async fn autoscale_down(state: &AppState) -> Result<()> {
         let Some(server_id) = c.hetzner_server_id else {
             continue;
         };
-        let token =
-            credentials::first_hetzner_token(state.pool(), state.master_key(), &c.workspace_id)
-                .await?;
+        let token = credentials::hetzner_token_for_workspace(
+            state.pool(),
+            state.config(),
+            state.master_key(),
+            &c.workspace_id,
+        )
+        .await?;
         let Some(token) = token else { continue };
 
         tracing::info!(node = %c.id, "autoscale-down: terminating idle hetzner node");
@@ -1247,8 +1298,8 @@ async fn autoscale_down(state: &AppState) -> Result<()> {
 }
 
 /// Enqueue an `update_routes` command for the given node with the current
-/// hostname → deployment route set (derived from service_domains + running
-/// deployments).
+/// hostname → deployment route set. Edge nodes receive workspace-wide routes
+/// and dial deployments over the project private network.
 pub async fn push_routes_for_node(pool: &DatabaseConnection, node_id: &str) -> Result<()> {
     let routes = crate::domains::routes_for_node(pool, node_id).await?;
     let payload = json!({
@@ -1256,14 +1307,15 @@ pub async fn push_routes_for_node(pool: &DatabaseConnection, node_id: &str) -> R
             "hostname": r.hostname,
             "container_port": r.container_port,
             "deployment_id": r.deployment_id,
-            "container_name": r.container_name,
+            "upstream_host": r.upstream_host,
+            "container_name": format!("driftbase-{}", r.deployment_id),
         })).collect::<Vec<_>>(),
     });
     commands::enqueue(pool, node_id, None, CommandKind::UpdateRoutes, payload).await?;
     Ok(())
 }
 
-/// Push route updates to every node currently running a deployment of this service.
+/// Push route updates to every public edge node in this service's workspace.
 pub async fn push_routes_for_service(pool: &DatabaseConnection, service_id: &str) -> Result<()> {
     let nodes = crate::domains::nodes_for_service(pool, service_id).await?;
     for node_id in nodes {

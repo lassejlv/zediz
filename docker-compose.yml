@@ -15,6 +15,7 @@ services:
       DRIFTBASE_PUBLIC_URL: ${DRIFTBASE_PUBLIC_URL:-https://driftbase.app}
       DRIFTBASE_COOKIE_SECURE: "true"
       DRIFTBASE_AGENT_IMAGE: ${DRIFTBASE_AGENT_IMAGE:-ghcr.io/lassejlv/driftbase-agent:latest}
+      DRIFTBASE_MANAGED_HETZNER_API_TOKEN: ${DRIFTBASE_MANAGED_HETZNER_API_TOKEN:-}
       # Bundled registry plumbing; empty disables the auth proxy + the
       # credential-create `username = id` override.
       DRIFTBASE_REGISTRY_SITE: ${REGISTRY_SITE:-registry.driftbase.app}

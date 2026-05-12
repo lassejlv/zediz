@@ -201,6 +201,7 @@ async fn list(
     Path(slug): Path<String>,
 ) -> ApiResult<Json<Vec<NodeSummary>>> {
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
+    require_nodes_unavailable(state.pool(), &ctx.workspace_id.to_string()).await?;
 
     let rows: Vec<NodeRow> = crate::db::query_as(
         "SELECT n.id, n.name, n.provider, n.status, \
@@ -281,6 +282,7 @@ async fn drain(
 ) -> ApiResult<()> {
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
     membership::require(&ctx, Role::Admin)?;
+    require_nodes_unavailable(state.pool(), &ctx.workspace_id.to_string()).await?;
 
     let row: Option<(String,)> =
         crate::db::query_tuple("SELECT id FROM nodes WHERE id = $1 AND workspace_id = $2")
@@ -304,6 +306,7 @@ async fn check_agent_update(
 ) -> ApiResult<Json<crate::agent_updates::AgentUpdateResponse>> {
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
     membership::require(&ctx, Role::Admin)?;
+    require_nodes_unavailable(state.pool(), &ctx.workspace_id.to_string()).await?;
 
     crate::agent_updates::check_node_update(
         state.pool(),
@@ -322,6 +325,7 @@ async fn update_agent(
 ) -> ApiResult<Json<crate::agent_updates::AgentUpdateResponse>> {
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
     membership::require(&ctx, Role::Admin)?;
+    require_nodes_unavailable(state.pool(), &ctx.workspace_id.to_string()).await?;
 
     crate::agent_updates::enqueue_node_update(
         state.pool(),
@@ -347,6 +351,7 @@ async fn delete(
 ) -> ApiResult<()> {
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
     membership::require(&ctx, Role::Admin)?;
+    require_nodes_unavailable(state.pool(), &ctx.workspace_id.to_string()).await?;
 
     #[derive(sea_orm::FromQueryResult)]
     struct Node {
@@ -380,8 +385,9 @@ async fn delete(
     // failed delete attempt. Keep retrying provider cleanup until Hetzner
     // confirms deletion (or 404) before dropping the local pointer.
     if let ("hetzner", Some(server_id)) = (node.provider.as_str(), node.hetzner_server_id) {
-        let token = credentials::first_hetzner_token(
+        let token = credentials::hetzner_token_for_workspace(
             state.pool(),
+            state.config(),
             state.master_key(),
             &ctx.workspace_id.to_string(),
         )
@@ -389,8 +395,7 @@ async fn delete(
         .map_err(ApiError::Internal)?;
         let token = token.ok_or_else(|| {
             ApiError::Validation(
-                "workspace has no Hetzner API token credential; cannot delete provider server"
-                    .into(),
+                "managed Hetzner token is not configured; cannot delete provider server".into(),
             )
         })?;
         hetzner_provisioner::terminate(state.pool(), &token, &node.id, server_id)
@@ -445,6 +450,7 @@ async fn provision(
 ) -> ApiResult<Json<ProvisionResponse>> {
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
     membership::require(&ctx, Role::Admin)?;
+    require_nodes_unavailable(state.pool(), &ctx.workspace_id.to_string()).await?;
 
     #[derive(sea_orm::FromQueryResult)]
     struct Ws {
@@ -489,14 +495,15 @@ async fn provision(
         .unwrap_or(ws.hetzner_location.as_str())
         .to_string();
 
-    let token = credentials::first_hetzner_token(
+    let token = credentials::hetzner_token_for_workspace(
         state.pool(),
+        state.config(),
         state.master_key(),
         &ctx.workspace_id.to_string(),
     )
     .await
     .map_err(ApiError::Internal)?
-    .ok_or_else(|| ApiError::Validation("no Hetzner API token in this workspace".into()))?;
+    .ok_or_else(|| ApiError::Validation("managed Hetzner token is not configured".into()))?;
 
     let ssh_key_ids =
         crate::ssh_keys::ensure_on_hetzner(state.pool(), &ctx.workspace_id.to_string(), &token)
@@ -522,4 +529,12 @@ async fn provision(
         node_id: result.node_id,
         hetzner_server_id: result.hetzner_server_id,
     }))
+}
+
+async fn require_nodes_unavailable(
+    pool: &sea_orm::DatabaseConnection,
+    workspace_id: &str,
+) -> ApiResult<()> {
+    let _ = (pool, workspace_id);
+    Err(ApiError::Forbidden("nodes are managed by Driftbase".into()))
 }

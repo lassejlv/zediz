@@ -23,8 +23,6 @@ import {
   useUpdateDomain,
   domainsQuery,
 } from '@/lib/domains';
-import { serviceDeploymentsQuery } from '@/lib/services';
-import { nodesQuery } from '@/lib/nodes';
 import { ApiError } from '@/lib/api';
 import {
   Button,
@@ -69,18 +67,10 @@ export function DomainsSection({
   const del = useDeleteDomain(workspaceSlug, projectSlug, serviceSlug);
   const updateDomain = useUpdateDomain(workspaceSlug, projectSlug, serviceSlug);
   const retry = useRetryDomain(workspaceSlug, projectSlug, serviceSlug);
-  const nodes = useQuery(nodesQuery(workspaceSlug));
-  const deployments = useQuery(
-    serviceDeploymentsQuery(workspaceSlug, projectSlug, serviceSlug),
-  );
-
-  const routedDeployment = deployments.data?.find(
-    (d) => d.node_id && !['stopped', 'errored'].includes(d.status),
-  );
-  const routeNode = nodes.data?.find((n) => n.id === routedDeployment?.node_id);
-  const nodeIp = routeNode?.public_ipv4 ?? null;
 
   const list = domains.data ?? [];
+  const edgeIp =
+    list.flatMap((domain) => domain.edge_ips).find((ip) => ip.length > 0) ?? null;
   const [addOpen, setAddOpen] = useState(false);
   const showAddCard = canManage && (addOpen || list.length === 0);
 
@@ -116,7 +106,7 @@ export function DomainsSection({
       {showAddCard ? (
         <AddDomainCard
           defaultPort={defaultPort}
-          nodeIp={nodeIp}
+          edgeIp={edgeIp}
           onSubmit={async (body) => {
             await add.mutateAsync(body);
             setAddOpen(false);
@@ -139,7 +129,7 @@ export function DomainsSection({
               key={d.id}
               domain={d}
               canManage={canManage}
-              nodeIp={nodeIp}
+              edgeIp={d.edge_ips[0] ?? edgeIp}
               onUpdatePort={(port) =>
                 updateDomain.mutateAsync({ id: d.id, container_port: port })
               }
@@ -159,12 +149,12 @@ export function DomainsSection({
 
 function AddDomainCard({
   defaultPort,
-  nodeIp,
+  edgeIp,
   pending,
   onSubmit,
 }: {
   defaultPort?: number | null;
-  nodeIp: string | null;
+  edgeIp: string | null;
   pending: boolean;
   onSubmit: (body: { hostname: string; container_port?: number }) => Promise<void>;
 }) {
@@ -242,20 +232,20 @@ function AddDomainCard({
         </div>
       ) : null}
 
-      <DnsRecordPreview hostname={normalized} nodeIp={nodeIp} />
+      <DnsRecordPreview hostname={normalized} edgeIp={edgeIp} />
     </Card>
   );
 }
 
 function DnsRecordPreview({
   hostname,
-  nodeIp,
+  edgeIp,
 }: {
   hostname: string;
-  nodeIp: string | null;
+  edgeIp: string | null;
 }) {
   const recordName = dnsRecordName(hostname);
-  const ip = nodeIp ?? '—';
+  const ip = edgeIp ?? '—';
   const cloudflare = useCloudflareDetection(hostname);
 
   return (
@@ -267,19 +257,19 @@ function DnsRecordPreview({
       <div className="grid grid-cols-[auto_auto_auto_auto_1fr_auto] items-center gap-x-3 gap-y-1 font-mono text-xs">
         <DnsCell label="type" value="A" />
         <DnsCell label="name" value={recordName || '—'} copyable={recordName} />
-        <DnsCell label="value" value={ip} copyable={nodeIp ?? ''} />
+        <DnsCell label="value" value={ip} copyable={edgeIp ?? ''} />
         <DnsCell label="ttl" value="auto" />
       </div>
       <p className="mt-2 text-xs text-[var(--color-muted)]">
-        {nodeIp
-          ? 'Caddy issues TLS on the first HTTPS request. Propagation usually takes a minute.'
-          : 'Deploy the service first — a node IP is needed before DNS can point anywhere.'}
+        {edgeIp
+          ? 'Caddy issues TLS at the edge on the first HTTPS request. Propagation usually takes a minute.'
+          : 'Deploy the service first — an edge IP is needed before DNS can point anywhere.'}
       </p>
       {cloudflare.detected ? (
         <CloudflareConnect
           apex={cloudflare.apex}
           recordName={recordName}
-          nodeIp={nodeIp}
+          nodeIp={edgeIp}
         />
       ) : null}
     </div>
@@ -311,7 +301,7 @@ function DnsCell({
 function DomainRow({
   domain,
   canManage,
-  nodeIp,
+  edgeIp,
   onUpdatePort,
   onRetry,
   retrying,
@@ -320,7 +310,7 @@ function DomainRow({
 }: {
   domain: DomainSummary;
   canManage: boolean;
-  nodeIp: string | null;
+  edgeIp: string | null;
   onUpdatePort: (port: number) => Promise<DomainSummary>;
   onRetry: () => void;
   retrying: boolean;
@@ -376,12 +366,12 @@ function DomainRow({
       {needsSetup || domain.last_error ? (
         <div className="mt-3 border-t border-[var(--color-border)] pt-3">
           {domain.tls_status === 'pending' ? (
-            <PendingHelp hostname={domain.hostname} nodeIp={nodeIp} />
+            <PendingHelp hostname={domain.hostname} edgeIp={edgeIp} />
           ) : null}
           {domain.tls_status === 'failed' && domain.last_error ? (
             <Stack gap={2}>
               <p className="text-xs text-red-400">{domain.last_error}</p>
-              <PendingHelp hostname={domain.hostname} nodeIp={nodeIp} />
+              <PendingHelp hostname={domain.hostname} edgeIp={edgeIp} />
             </Stack>
           ) : null}
         </div>
@@ -415,28 +405,28 @@ function RetryButton({
 
 function PendingHelp({
   hostname,
-  nodeIp,
+  edgeIp,
 }: {
   hostname: string;
-  nodeIp: string | null;
+  edgeIp: string | null;
 }) {
   const name = dnsRecordName(hostname);
-  const ip = nodeIp ?? '<your node IP>';
+  const ip = edgeIp ?? '<your edge IP>';
   const cloudflare = useCloudflareDetection(hostname);
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--color-muted)]">
-        <span>Point DNS at this node, then HTTPS issues the cert:</span>
+        <span>Point DNS at the edge, then HTTPS issues the cert:</span>
         <span className="inline-flex items-center gap-1.5 rounded border border-[var(--color-border)] bg-black/[0.03] px-1.5 py-0.5 font-mono text-[var(--color-fg)] dark:bg-white/[0.03]">
           A {name} → {ip}
         </span>
-        {nodeIp ? <CopyBtn value={nodeIp} /> : null}
+        {edgeIp ? <CopyBtn value={edgeIp} /> : null}
       </div>
       {cloudflare.detected ? (
         <CloudflareConnect
           apex={cloudflare.apex}
           recordName={name}
-          nodeIp={nodeIp}
+          nodeIp={edgeIp}
         />
       ) : null}
     </div>

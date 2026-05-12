@@ -28,7 +28,7 @@ export function projectQuery(slug: string, projectSlug: string) {
 export function useCreateProject(slug: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: { slug: string; name: string }) =>
+    mutationFn: (input: { slug: string; name: string; hetzner_location: string }) =>
       api<ProjectSummary>(`/workspaces/${encodeURIComponent(slug)}/projects`, {
         method: 'POST',
         body: input,

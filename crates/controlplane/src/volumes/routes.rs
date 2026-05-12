@@ -71,8 +71,9 @@ async fn create(
         ));
     }
 
-    // Default to the workspace's default region. We always set a
-    // location — the UI doesn't expose an override yet.
+    // Default to the workspace's default region. Service-attached volumes
+    // should be created in the project region by passing `location` from
+    // the UI/API before attachment.
     let workspace_location: (String,) =
         crate::db::query_tuple("SELECT hetzner_location FROM workspaces WHERE id = $1")
             .bind(ctx.workspace_id.to_string())
@@ -102,18 +103,15 @@ async fn create(
 
     // Call Hetzner. On any failure, delete the row so the user can retry.
     let result = async {
-        let token = credentials::first_hetzner_token(
+        let token = credentials::hetzner_token_for_workspace(
             state.pool(),
+            state.config(),
             state.master_key(),
             &ctx.workspace_id.to_string(),
         )
         .await
         .map_err(ApiError::Internal)?
-        .ok_or_else(|| {
-            ApiError::Validation(
-                "workspace has no Hetzner API token credential; add one in Credentials".into(),
-            )
-        })?;
+        .ok_or_else(|| ApiError::Validation("managed Hetzner token is not configured".into()))?;
         let client = HetznerClient::new(&token);
         let created = client
             .create_volume(&CreateVolumeRequest {
@@ -212,6 +210,7 @@ async fn remove(
 
     volumes::delete_backing_volume_and_row(
         state.pool(),
+        state.config(),
         state.master_key(),
         &ctx.workspace_id.to_string(),
         &row,

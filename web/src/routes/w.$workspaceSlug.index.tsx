@@ -3,7 +3,6 @@ import { useQuery } from '@tanstack/react-query';
 import { Sparkles } from 'lucide-react';
 import { canAdmin, workspaceQuery } from '@/lib/workspaces';
 import { projectsQuery } from '@/lib/projects';
-import { nodesQuery } from '@/lib/nodes';
 import { credentialsQuery } from '@/lib/credentials';
 import { Button, Card, PageHeader, StatCard, Stack } from '@/components/ui';
 
@@ -15,7 +14,6 @@ function OverviewPage() {
   const { workspaceSlug } = Route.useParams();
   const workspace = useQuery(workspaceQuery(workspaceSlug));
   const projects = useQuery(projectsQuery(workspaceSlug));
-  const nodes = useQuery(nodesQuery(workspaceSlug));
   const isAdmin = canAdmin(workspace.data);
   const credentials = useQuery({
     ...credentialsQuery(workspaceSlug),
@@ -23,21 +21,12 @@ function OverviewPage() {
   });
 
   const projectCount = projects.data?.length ?? 0;
-  const nodeCount = nodes.data?.length ?? 0;
-  const readyNodes = nodes.data?.filter((n) => n.status === 'ready').length ?? 0;
-  const provisioningNodes =
-    nodes.data?.filter((n) => n.status === 'provisioning').length ?? 0;
-  const drainingNodes = nodes.data?.filter((n) => n.status === 'draining').length ?? 0;
-
-  const hasHetzner = !!credentials.data?.some(
-    (c) => c.kind === 'hetzner_api_token',
-  );
   const hasGithub = !!credentials.data?.some((c) => c.kind === 'github_pat');
   const hasRegistry = !!credentials.data?.some((c) => c.kind === 'registry');
   const showOnboarding =
     isAdmin &&
     credentials.isSuccess &&
-    (!hasHetzner || !hasGithub || !hasRegistry);
+    (!hasGithub || !hasRegistry);
 
   return (
     <Stack gap={8}>
@@ -48,26 +37,13 @@ function OverviewPage() {
       {showOnboarding ? (
         <OnboardingBanner
           workspaceSlug={workspaceSlug}
-          hasHetzner={hasHetzner}
           hasGithub={hasGithub}
           hasRegistry={hasRegistry}
         />
       ) : null}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <StatCard label="Projects" value={projectCount} mono />
-        <StatCard label="Nodes" value={nodeCount} mono />
-        <StatCard
-          label="Ready"
-          value={readyNodes}
-          mono
-          hint={
-            provisioningNodes > 0
-              ? `${provisioningNodes} provisioning`
-              : drainingNodes > 0
-                ? `${drainingNodes} draining`
-                : 'all healthy'
-          }
-        />
+        <StatCard label="Infrastructure" value="Managed" />
         <StatCard label="Role" value={workspace.data?.role ?? '—'} />
       </div>
     </Stack>
@@ -76,17 +52,14 @@ function OverviewPage() {
 
 function OnboardingBanner({
   workspaceSlug,
-  hasHetzner,
   hasGithub,
   hasRegistry,
 }: {
   workspaceSlug: string;
-  hasHetzner: boolean;
   hasGithub: boolean;
   hasRegistry: boolean;
 }) {
   const missing: string[] = [];
-  if (!hasHetzner) missing.push('Hetzner API token');
   if (!hasGithub) missing.push('GitHub PAT');
   if (!hasRegistry) missing.push('registry credential');
   const remaining = `Add a ${missing.join(', ')} to start deploying.`;

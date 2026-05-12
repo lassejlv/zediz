@@ -501,6 +501,11 @@ CREATE UNIQUE INDEX deployments_private_ipv4_unique
     ON deployments (private_ipv4)
     WHERE private_ipv4 IS NOT NULL;
 
+-- Projects carry the deployment region so creating a project feels like
+-- Railway: pick where this app/environment should run, then Driftbase handles
+-- machines behind the scenes.
+ALTER TABLE projects ADD COLUMN hetzner_location TEXT NOT NULL DEFAULT 'nbg1';
+
 -- Backfill one /16 per existing project. Runtime allocation code uses the
 -- same deterministic address pool and will fail clearly if the pool is full.
 WITH numbered AS (

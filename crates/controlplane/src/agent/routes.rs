@@ -634,6 +634,16 @@ async fn deployment_status(
             "running" | "stopped" | "errored" | "failing"
         )
     {
+        if let Err(e) = crate::scheduler::push_routes_for_service(state.pool(), &service_id).await {
+            tracing::warn!(error = ?e, service = %service_id, "push_routes_for_service");
+        }
+    }
+    if status_changed
+        && matches!(
+            update.status.as_str(),
+            "running" | "stopped" | "errored" | "failing"
+        )
+    {
         if let Err(e) = crate::private_network::sync_for_service(state.pool(), &service_id).await {
             tracing::warn!(error = ?e, service = %service_id, "sync private network for service");
         }

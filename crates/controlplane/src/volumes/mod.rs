@@ -5,6 +5,7 @@ use sea_orm::DatabaseConnection;
 use serde::Serialize;
 use std::time::Duration;
 
+use crate::config::Config;
 use crate::credentials;
 use crate::crypto::MasterKey;
 use crate::error::{ApiError, ApiResult};
@@ -100,6 +101,7 @@ pub async fn fetch_for_service(
 ///
 pub async fn delete_backing_volume_and_row(
     pool: &DatabaseConnection,
+    config: &Config,
     master_key: &MasterKey,
     workspace_id: &str,
     row: &VolumeRow,
@@ -108,9 +110,10 @@ pub async fn delete_backing_volume_and_row(
     // delete it. Non-fatal if detach returns an error — the delete
     // itself will surface any real problem.
     if let Some(hz_id) = row.hetzner_volume_id {
-        let token = credentials::first_hetzner_token(pool, master_key, workspace_id)
-            .await
-            .map_err(ApiError::Internal)?;
+        let token =
+            credentials::hetzner_token_for_workspace(pool, config, master_key, workspace_id)
+                .await
+                .map_err(ApiError::Internal)?;
         if let Some(token) = token {
             let client = driftbase_hetzner::HetznerClient::new(&token);
             if row.attached_node_id.is_some() {
@@ -126,8 +129,7 @@ pub async fn delete_backing_volume_and_row(
                 .map_err(|e| ApiError::Internal(anyhow::anyhow!("hetzner delete_volume: {e}")))?;
         } else {
             return Err(ApiError::Validation(
-                "workspace has no Hetzner API token credential; cannot delete provider volume"
-                    .into(),
+                "managed Hetzner token is not configured; cannot delete provider volume".into(),
             ));
         }
     }

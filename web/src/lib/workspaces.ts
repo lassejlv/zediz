@@ -49,11 +49,6 @@ export function useCreateWorkspace() {
 
 export interface UpdateWorkspaceInput {
   name?: string;
-  hetzner_location?: string;
-  default_server_type?: string;
-  max_nodes?: number;
-  max_monthly_euro?: number;
-  autoscale_idle_ttl_seconds?: number;
 }
 
 export function useUpdateWorkspace(slug: string) {

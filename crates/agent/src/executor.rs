@@ -451,20 +451,30 @@ impl Executor {
                 .and_then(|v| v.as_u64())
                 .and_then(|n| n.try_into().ok())
                 .unwrap_or(80u16);
+            let upstream_host = item
+                .get("upstream_host")
+                .or_else(|| item.get("container_name"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("route missing upstream_host"))?
+                .to_string();
             let container_name = item
                 .get("container_name")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("route missing container_name"))?
-                .to_string();
+                .map(str::to_string);
 
-            // Make sure the target container is attached to the shared
-            // `driftbase` network so Caddy can dial it by name.
-            crate::caddy::ensure_container_on_network(&docker, &container_name).await?;
+            // Older/local routes dial by Docker container name. Edge routes
+            // dial project-private IPs over WireGuard and do not require a
+            // local container.
+            if let Some(container_name) = container_name.as_deref() {
+                if upstream_host == container_name {
+                    crate::caddy::ensure_container_on_network(&docker, container_name).await?;
+                }
+            }
 
             routes.push(crate::caddy::Route {
                 hostname,
                 container_port,
-                container_name,
+                upstream_host,
             });
         }
 
