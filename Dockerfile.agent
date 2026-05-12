@@ -33,10 +33,22 @@ RUN apt-get update \
         iproute2 iptables wireguard-tools \
   && rm -rf /var/lib/apt/lists/*
 # Railpack — used when a git service opts into `builder=railpack` instead of a
-# hand-written Dockerfile. The install script drops a single statically-linked
-# binary; BuildKit fetches the railpack frontend image on demand.
-RUN curl -fsSL https://railpack.com/install.sh | bash -s -- -y -b /usr/local/bin \
-  && apt-get purge -y --auto-remove gnupg curl \
-  && rm -rf /var/lib/apt/lists/*
+# hand-written Dockerfile. Download a pinned release asset and verify it before
+# installing so image builds do not execute a mutable remote installer script.
+ARG RAILPACK_VERSION=0.23.0
+RUN set -eux; \
+  case "$TARGETARCH" in \
+    amd64) railpack_target="x86_64-unknown-linux-musl"; railpack_sha="e8bffc181c13e68c1c78ec618f1418e60b1602ec548f3ec1054996394ce0f06a" ;; \
+    arm64) railpack_target="arm64-unknown-linux-musl"; railpack_sha="d4505d0f5f9f48c6350ad349111e10a1f5ba16c118834c85c6d0ecd630b25c34" ;; \
+    *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+  esac; \
+  curl -fsSLo /tmp/railpack.tar.gz \
+    "https://github.com/railwayapp/railpack/releases/download/v${RAILPACK_VERSION}/railpack-v${RAILPACK_VERSION}-${railpack_target}.tar.gz"; \
+  echo "${railpack_sha}  /tmp/railpack.tar.gz" | sha256sum -c -; \
+  tar -xzf /tmp/railpack.tar.gz -C /usr/local/bin railpack; \
+  chmod 0755 /usr/local/bin/railpack; \
+  rm /tmp/railpack.tar.gz; \
+  apt-get purge -y --auto-remove gnupg curl; \
+  rm -rf /var/lib/apt/lists/*
 COPY --from=builder /build/target/release/driftbase-agent /usr/local/bin/driftbase-agent
 ENTRYPOINT ["/usr/local/bin/driftbase-agent"]

@@ -26,6 +26,9 @@ pub struct Config {
     /// Desired node-agent image. The node update checker resolves this ref to
     /// a registry digest and compares nodes against it.
     pub agent_image: String,
+    /// Optional one-time installer secret required for the first platform-admin
+    /// signup. If unset, first-signup bootstrap keeps its historical behavior.
+    pub setup_token: Option<String>,
 }
 
 pub struct LoadedConfig {
@@ -65,6 +68,7 @@ impl Config {
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| DEFAULT_AGENT_IMAGE.to_string());
+        let setup_token = optional_env(&["DRIFTBASE_SETUP_TOKEN"]);
 
         Ok(LoadedConfig {
             config: Self {
@@ -76,6 +80,7 @@ impl Config {
                 registry_site,
                 registry_upstream,
                 agent_image,
+                setup_token,
             },
             master_key,
         })

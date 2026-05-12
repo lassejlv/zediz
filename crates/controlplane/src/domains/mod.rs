@@ -4,7 +4,7 @@ use anyhow::Result;
 use reqwest::redirect::Policy;
 use sea_orm::DatabaseConnection;
 use std::collections::BTreeSet;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::net::lookup_host;
 
@@ -127,17 +127,11 @@ pub async fn probe_one(pool: &DatabaseConnection, domain_id: &str) -> Result<()>
         return Ok(());
     };
 
-    let http = reqwest::Client::builder()
-        .redirect(Policy::none())
-        .timeout(Duration::from_secs(5))
-        .build()?;
-
-    apply_probe_result(pool, &http, domain_id, &hostname, &expected_ip).await
+    apply_probe_result(pool, domain_id, &hostname, &expected_ip).await
 }
 
 async fn apply_probe_result(
     pool: &DatabaseConnection,
-    http: &reqwest::Client,
     domain_id: &str,
     hostname: &str,
     expected_ip: &str,
@@ -172,7 +166,7 @@ async fn apply_probe_result(
         return Ok(());
     }
 
-    match probe_hostname(http, hostname).await {
+    match probe_hostname(hostname, expected_ip).await {
         Ok(()) => {
             crate::db::query(
                 "UPDATE service_domains SET \
@@ -213,11 +207,6 @@ pub async fn refresh_tls_statuses(pool: &DatabaseConnection) -> Result<()> {
     .fetch_all(pool)
     .await?;
 
-    let http = reqwest::Client::builder()
-        .redirect(Policy::none())
-        .timeout(Duration::from_secs(5))
-        .build()?;
-
     for (id, hostname, has_running, expected_ip) in rows {
         if !has_running {
             crate::db::query(
@@ -241,7 +230,7 @@ pub async fn refresh_tls_statuses(pool: &DatabaseConnection) -> Result<()> {
             }
         };
 
-        apply_probe_result(pool, &http, &id, &hostname, &expected_ip).await?;
+        apply_probe_result(pool, &id, &hostname, &expected_ip).await?;
     }
 
     Ok(())
@@ -272,7 +261,13 @@ async fn resolve_hostname(hostname: &str) -> Result<Vec<String>> {
     Ok(uniq.into_iter().collect())
 }
 
-async fn probe_hostname(http: &reqwest::Client, hostname: &str) -> Result<()> {
+async fn probe_hostname(hostname: &str, expected_ip: &str) -> Result<()> {
+    let expected_ip: IpAddr = expected_ip.parse()?;
+    let http = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .timeout(Duration::from_secs(5))
+        .resolve(hostname, SocketAddr::new(expected_ip, 443))
+        .build()?;
     let url = format!("https://{hostname}");
     let res = http.get(url).send().await?;
     // Any HTTP response means DNS + TCP + TLS + request routing worked.

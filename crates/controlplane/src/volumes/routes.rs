@@ -155,13 +155,15 @@ async fn create(
     .await;
 
     if let Err(e) = result {
-        // Best-effort cleanup. We may have a dangling Hetzner volume
-        // if creation succeeded but the wait failed; log and carry on
-        // so the user can retry without hitting the name conflict.
-        let _ = crate::db::query("DELETE FROM volumes WHERE id = $1")
-            .bind(&volume_id)
-            .execute(state.pool())
-            .await;
+        let reason = e.to_string();
+        let _ = crate::db::query(
+            "UPDATE volumes SET status = 'errored', reason = $1, updated_at = now() \
+             WHERE id = $2",
+        )
+        .bind(&reason)
+        .bind(&volume_id)
+        .execute(state.pool())
+        .await;
         return Err(e);
     }
 
@@ -179,17 +181,34 @@ async fn remove(
     let ctx = membership::resolve(state.pool(), &slug, &auth.user_id).await?;
     membership::require(&ctx, Role::Member)?;
 
-    let row = volumes::fetch_by_id(state.pool(), &id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
-    if row.workspace_id != ctx.workspace_id.to_string() {
-        return Err(ApiError::NotFound);
-    }
-    if row.attached_service_id.is_some() {
-        return Err(ApiError::Conflict(
-            "detach the volume from its service before deleting".into(),
-        ));
-    }
+    let row: Option<VolumeRow> = crate::db::query_as(format!(
+        "UPDATE volumes \
+         SET status = 'deleting', reason = NULL, updated_at = now() \
+         WHERE id = $1 AND workspace_id = $2 AND attached_service_id IS NULL \
+         RETURNING {VOLUME_COLUMNS}"
+    ))
+    .bind(&id)
+    .bind(ctx.workspace_id.to_string())
+    .fetch_optional(state.pool())
+    .await?;
+    let Some(row) = row else {
+        let exists: Option<(Option<String>,)> = crate::db::query_tuple(
+            "SELECT attached_service_id FROM volumes WHERE id = $1 AND workspace_id = $2",
+        )
+        .bind(&id)
+        .bind(ctx.workspace_id.to_string())
+        .fetch_optional(state.pool())
+        .await?;
+        return match exists {
+            Some((Some(_),)) => Err(ApiError::Conflict(
+                "detach the volume from its service before deleting".into(),
+            )),
+            Some((None,)) => Err(ApiError::Conflict(
+                "volume is busy; retry deletion in a moment".into(),
+            )),
+            None => Err(ApiError::NotFound),
+        };
+    };
 
     volumes::delete_backing_volume_and_row(
         state.pool(),
@@ -228,31 +247,23 @@ async fn attach_to_service(
     membership::require(&ctx, Role::Member)?;
     let service_id = resolve_service(state.pool(), &ctx, &project_slug, &service_slug).await?;
 
-    let volume = volumes::fetch_by_id(state.pool(), &req.volume_id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
-    if volume.workspace_id != ctx.workspace_id.to_string() {
-        return Err(ApiError::NotFound);
-    }
-    if volume.status != "available" && volume.attached_service_id.as_deref() != Some(&service_id) {
-        return Err(ApiError::Conflict(format!(
-            "volume is {} — detach it from its current service first",
-            volume.status
-        )));
-    }
-
     volumes::validate_mount_path(&req.mount_path)?;
 
-    crate::db::query(
+    let row: Option<VolumeRow> = crate::db::query_as(format!(
         "UPDATE volumes \
          SET attached_service_id = $1, mount_path = $2, status = 'attached', \
              updated_at = now() \
-         WHERE id = $3",
-    )
+         WHERE id = $3 \
+           AND workspace_id = $4 \
+           AND (attached_service_id IS NULL OR attached_service_id = $1) \
+           AND (status = 'available' OR attached_service_id = $1) \
+         RETURNING {VOLUME_COLUMNS}"
+    ))
     .bind(&service_id)
     .bind(req.mount_path.trim())
     .bind(&req.volume_id)
-    .execute(state.pool())
+    .bind(ctx.workspace_id.to_string())
+    .fetch_optional(state.pool())
     .await
     .map_err(|e| match e {
         e if crate::db::is_unique_violation(&e) => {
@@ -260,10 +271,21 @@ async fn attach_to_service(
         }
         other => ApiError::Db(other),
     })?;
-
-    let row = volumes::fetch_by_id(state.pool(), &req.volume_id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
+    let Some(row) = row else {
+        let existing: Option<(String,)> = crate::db::query_tuple(
+            "SELECT status FROM volumes WHERE id = $1 AND workspace_id = $2",
+        )
+        .bind(&req.volume_id)
+        .bind(ctx.workspace_id.to_string())
+        .fetch_optional(state.pool())
+        .await?;
+        return match existing {
+            Some((status,)) => Err(ApiError::Conflict(format!(
+                "volume is {status} — detach it from its current service first"
+            ))),
+            None => Err(ApiError::NotFound),
+        };
+    };
     Ok(Json(VolumeSummary::from(row)))
 }
 

@@ -352,11 +352,10 @@ async fn delete(
     struct Node {
         id: String,
         provider: String,
-        status: String,
         hetzner_server_id: Option<i64>,
     }
     let node: Option<Node> = crate::db::query_as(
-        "SELECT id, provider, status, hetzner_server_id FROM nodes \
+        "SELECT id, provider, hetzner_server_id FROM nodes \
          WHERE id = $1 AND workspace_id = $2",
     )
     .bind(&node_id)
@@ -376,13 +375,11 @@ async fn delete(
         )));
     }
 
-    // Only call Hetzner when there's actually a live VM to kill — skip if the
-    // row is already tombstoned as 'terminated' or there's no server id.
-    let should_call_hetzner = node.provider == "hetzner"
-        && node.status != "terminated"
-        && node.hetzner_server_id.is_some();
-
-    if should_call_hetzner {
+    // A Hetzner server id means there may still be a billable VM, even when
+    // the Driftbase row is already tombstoned as terminated from a previous
+    // failed delete attempt. Keep retrying provider cleanup until Hetzner
+    // confirms deletion (or 404) before dropping the local pointer.
+    if let ("hetzner", Some(server_id)) = (node.provider.as_str(), node.hetzner_server_id) {
         let token = credentials::first_hetzner_token(
             state.pool(),
             state.master_key(),
@@ -390,17 +387,21 @@ async fn delete(
         )
         .await
         .map_err(ApiError::Internal)?;
-        if let (Some(token), Some(server_id)) = (token, node.hetzner_server_id) {
-            hetzner_provisioner::terminate(state.pool(), &token, &node.id, server_id)
-                .await
-                .map_err(ApiError::Internal)?;
-            pause_scheduler(state.pool(), &ctx.workspace_id.to_string()).await?;
-            return Ok(());
-        }
+        let token = token.ok_or_else(|| {
+            ApiError::Validation(
+                "workspace has no Hetzner API token credential; cannot delete provider server"
+                    .into(),
+            )
+        })?;
+        hetzner_provisioner::terminate(state.pool(), &token, &node.id, server_id)
+            .await
+            .map_err(ApiError::Internal)?;
+        pause_scheduler(state.pool(), &ctx.workspace_id.to_string()).await?;
+        return Ok(());
     }
 
-    // Already-terminated tombstone, or no credential to hit Hetzner with —
-    // just drop the row so the UI stays clean. No pause: no live VM was killed.
+    // No provider server id is present, so there is no external resource this
+    // row can clean up.
     crate::db::query("DELETE FROM nodes WHERE id = $1")
         .bind(&node.id)
         .execute(state.pool())

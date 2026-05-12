@@ -149,7 +149,7 @@ function TemplateDeployForm({
     setError(null);
     setPartialHint(null);
 
-    const trimmedSlug = slug.trim();
+    const trimmedSlug = slugify(slug);
     const trimmedName = name.trim();
     if (!trimmedSlug || !trimmedName) {
       setError('Name and slug are required.');
@@ -296,7 +296,7 @@ function TemplateDeployForm({
               required
               value={slug}
               onChange={(e) => {
-                setSlug(e.target.value);
+                setSlug(slugify(e.target.value));
                 setSlugTouched(true);
               }}
               disabled={running}

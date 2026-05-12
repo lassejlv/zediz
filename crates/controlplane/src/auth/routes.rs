@@ -34,6 +34,8 @@ pub struct SignupRequest {
     pub password: String,
     pub display_name: String,
     pub invite_token: Option<String>,
+    #[serde(default)]
+    pub setup_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -105,6 +107,14 @@ async fn signup(
         .fetch_one(&tx)
         .await?;
     let is_first_user = existing_count.0 == 0;
+    if is_first_user {
+        if let Some(expected) = state.config().setup_token.as_deref() {
+            let supplied = req.setup_token.as_deref().unwrap_or("");
+            if !constant_time_eq(expected.as_bytes(), supplied.as_bytes()) {
+                return Err(ApiError::Forbidden("invalid setup token".into()));
+            }
+        }
+    }
 
     crate::db::query(
         "INSERT INTO users (id, email, password_hash, display_name, status, is_platform_admin) \
@@ -322,6 +332,17 @@ fn build_cookie(token: &str, expires_at: DateTime<Utc>, secure: bool) -> Cookie<
         .same_site(SameSite::Lax)
         .expires(expires)
         .build()
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    let max_len = a.len().max(b.len());
+    let mut diff = a.len() ^ b.len();
+    for i in 0..max_len {
+        let av = a.get(i).copied().unwrap_or(0);
+        let bv = b.get(i).copied().unwrap_or(0);
+        diff |= usize::from(av ^ bv);
+    }
+    diff == 0
 }
 
 fn validate_email(email: &str) -> ApiResult<()> {

@@ -8,6 +8,7 @@ use serde_json::{json, Value as JsonValue};
 
 use crate::error::{ApiError, ApiResult};
 use crate::services::routes::ServiceSummary;
+use crate::workspaces::membership::Role;
 
 #[derive(Debug, Serialize)]
 pub struct DeploymentSummary {
@@ -205,30 +206,15 @@ pub async fn authorize(
     deployment_id: &str,
     user_id: &Id,
 ) -> ApiResult<DeploymentRow> {
-    let row: Option<(String, String)> = crate::db::query_tuple(
-        "SELECT w.id, m.role \
-         FROM deployments d \
-         JOIN services s ON s.id = d.service_id \
-         JOIN projects p ON p.id = s.project_id \
-         JOIN workspaces w ON w.id = p.workspace_id \
-         JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = $1 \
-         WHERE d.id = $2",
-    )
-    .bind(user_id.to_string())
-    .bind(deployment_id)
-    .fetch_optional(pool)
-    .await?;
-    row.ok_or(ApiError::NotFound)?;
-    fetch_by_id(pool, deployment_id).await
+    authorize_role(pool, deployment_id, user_id, Role::Viewer, "").await
 }
 
-/// Same as [`authorize`] but additionally requires the caller is at least
-/// a workspace admin. Used by sensitive operations like opening a shell
-/// inside a running container.
-pub async fn authorize_admin(
+async fn authorize_role(
     pool: &DatabaseConnection,
     deployment_id: &str,
     user_id: &Id,
+    required: Role,
+    message: &str,
 ) -> ApiResult<DeploymentRow> {
     let row: Option<(String, String)> = crate::db::query_tuple(
         "SELECT w.id, m.role \
@@ -244,11 +230,44 @@ pub async fn authorize_admin(
     .fetch_optional(pool)
     .await?;
     let (_workspace_id, role) = row.ok_or(ApiError::NotFound)?;
-    let role: crate::workspaces::membership::Role = role.parse().map_err(ApiError::Validation)?;
-    if !role.at_least(crate::workspaces::membership::Role::Admin) {
-        return Err(ApiError::Forbidden(
-            "admin role required for console access".into(),
-        ));
+    let role: Role = role.parse().map_err(ApiError::Validation)?;
+    if !role.at_least(required) {
+        return Err(ApiError::Forbidden(message.to_string()));
     }
     fetch_by_id(pool, deployment_id).await
+}
+
+/// Same as [`authorize`] but additionally requires the caller can mutate
+/// deployments in the owning workspace.
+pub async fn authorize_member(
+    pool: &DatabaseConnection,
+    deployment_id: &str,
+    user_id: &Id,
+) -> ApiResult<DeploymentRow> {
+    authorize_role(
+        pool,
+        deployment_id,
+        user_id,
+        Role::Member,
+        "member role required for deployment changes",
+    )
+    .await
+}
+
+/// Same as [`authorize`] but additionally requires the caller is at least
+/// a workspace admin. Used by sensitive operations like opening a shell
+/// inside a running container.
+pub async fn authorize_admin(
+    pool: &DatabaseConnection,
+    deployment_id: &str,
+    user_id: &Id,
+) -> ApiResult<DeploymentRow> {
+    authorize_role(
+        pool,
+        deployment_id,
+        user_id,
+        Role::Admin,
+        "admin role required for console access",
+    )
+    .await
 }

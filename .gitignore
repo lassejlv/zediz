@@ -39,3 +39,4 @@ web/tsconfig.*.tsbuildinfo
 
 # Logs
 *.log
+.codex/config.toml

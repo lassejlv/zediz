@@ -34,7 +34,7 @@ async fn stop(
     auth: AuthUser,
     Path(id): Path<String>,
 ) -> ApiResult<Json<DeploymentSummary>> {
-    let row = deployments::authorize(state.pool(), &id, &auth.user_id).await?;
+    let row = deployments::authorize_member(state.pool(), &id, &auth.user_id).await?;
 
     if let Some(node_id) = row.node_id.as_deref() {
         commands::enqueue(

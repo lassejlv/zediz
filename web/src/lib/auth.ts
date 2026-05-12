@@ -37,6 +37,7 @@ export function useLogin() {
 export interface SignupInput extends LoginInput {
   display_name: string;
   invite_token?: string;
+  setup_token?: string;
 }
 
 /** Shape of POST /auth/signup. `pending: true` means the account was

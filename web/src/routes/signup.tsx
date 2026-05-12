@@ -27,6 +27,7 @@ function SignupPage() {
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
+  const [setupToken, setSetupToken] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [pendingEmail, setPendingEmail] = useState<string | null>(null);
 
@@ -39,6 +40,7 @@ function SignupPage() {
         password,
         display_name: displayName,
         invite_token: invite,
+        setup_token: setupToken.trim() || undefined,
       });
       if (isPendingSignup(result)) {
         setPendingEmail(result.email);
@@ -108,6 +110,15 @@ function SignupPage() {
               minLength={8}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+            />
+          </Field>
+          <Field label="Setup token" htmlFor="setup-token" hint="Only needed on locked installs.">
+            <Input
+              id="setup-token"
+              type="password"
+              autoComplete="off"
+              value={setupToken}
+              onChange={(e) => setSetupToken(e.target.value)}
             />
           </Field>
           {error ? <ErrorText>{error}</ErrorText> : null}

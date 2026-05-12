@@ -98,8 +98,6 @@ pub async fn fetch_for_service(
 
 /// Delete the provider-side volume, then remove the local row.
 ///
-/// If the workspace no longer has a Hetzner token, this preserves the
-/// existing API behavior and only removes the local row.
 pub async fn delete_backing_volume_and_row(
     pool: &DatabaseConnection,
     master_key: &MasterKey,
@@ -126,6 +124,11 @@ pub async fn delete_backing_volume_and_row(
                 .delete_volume(hz_id)
                 .await
                 .map_err(|e| ApiError::Internal(anyhow::anyhow!("hetzner delete_volume: {e}")))?;
+        } else {
+            return Err(ApiError::Validation(
+                "workspace has no Hetzner API token credential; cannot delete provider volume"
+                    .into(),
+            ));
         }
     }
 

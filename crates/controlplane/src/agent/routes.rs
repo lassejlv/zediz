@@ -4,6 +4,7 @@ use axum::http::request::Parts;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base64::{engine::general_purpose::STANDARD as B64_STANDARD, Engine};
 use chrono::{DateTime, Utc};
 use futures::Stream;
 use serde::{Deserialize, Serialize};
@@ -56,6 +57,62 @@ struct RegisterResponse {
     heartbeat_interval_seconds: u32,
 }
 
+struct ValidatedWireGuard {
+    capable: bool,
+    public_key: Option<String>,
+    listen_port: Option<i32>,
+}
+
+fn validate_wireguard(
+    private_network_capable: bool,
+    public_key: Option<String>,
+    listen_port: Option<i32>,
+) -> ApiResult<ValidatedWireGuard> {
+    if !private_network_capable {
+        return Ok(ValidatedWireGuard {
+            capable: false,
+            public_key: None,
+            listen_port: None,
+        });
+    }
+
+    let public_key = public_key
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+        .ok_or_else(|| {
+            ApiError::Validation(
+                "wireguard_public_key is required when private networking is enabled".into(),
+            )
+        })?;
+    if public_key
+        .chars()
+        .any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return Err(ApiError::Validation("invalid wireguard_public_key".into()));
+    }
+    let decoded = B64_STANDARD
+        .decode(public_key.as_bytes())
+        .map_err(|_| ApiError::Validation("invalid wireguard_public_key".into()))?;
+    if decoded.len() != 32 {
+        return Err(ApiError::Validation("invalid wireguard_public_key".into()));
+    }
+
+    let listen_port = listen_port.ok_or_else(|| {
+        ApiError::Validation(
+            "wireguard_listen_port is required when private networking is enabled".into(),
+        )
+    })?;
+    if !(1..=65535).contains(&listen_port) {
+        return Err(ApiError::Validation("invalid wireguard_listen_port".into()));
+    }
+
+    Ok(ValidatedWireGuard {
+        capable: true,
+        public_key: Some(public_key),
+        listen_port: Some(listen_port),
+    })
+}
+
 async fn register(
     State(state): State<AppState>,
     Json(req): Json<RegisterRequest>,
@@ -78,18 +135,17 @@ async fn register(
         return Err(ApiError::Unauthorized);
     }
 
+    let wireguard = validate_wireguard(
+        req.private_network_capable,
+        req.wireguard_public_key,
+        req.wireguard_listen_port,
+    )?;
     let node_token = tokens::mint_node(state.master_key(), &claims.node_id, &claims.workspace_id)
         .map_err(ApiError::Internal)?;
     let node_token_hash = tokens::fingerprint(&node_token);
-    let private_network_capable =
-        req.private_network_capable && req.wireguard_public_key.as_deref().is_some();
-    let mesh_ip = if private_network_capable {
-        Some(crate::private_network::assign_node_mesh_ip(state.pool(), &claims.node_id).await?)
-    } else {
-        None
-    };
+    let bootstrap_token_hash = tokens::fingerprint(&req.bootstrap_token);
 
-    crate::db::query(
+    let registered = crate::db::query(
         "UPDATE nodes SET \
             status = 'ready', \
             node_token_hash = $1, \
@@ -102,22 +158,39 @@ async fn register(
             last_seen_at = now(), \
             private_network_capable = $6, \
             wireguard_public_key = $7, \
-            wireguard_mesh_ip = COALESCE($8, wireguard_mesh_ip), \
-            wireguard_listen_port = COALESCE($9, wireguard_listen_port) \
-         WHERE id = $10",
+            wireguard_mesh_ip = CASE WHEN $6 THEN wireguard_mesh_ip ELSE NULL END, \
+            wireguard_listen_port = $8 \
+         WHERE id = $9 \
+           AND workspace_id = $10 \
+           AND bootstrap_token_hash = $11 \
+           AND status <> 'terminated'",
     )
     .bind(&node_token_hash)
     .bind(req.agent_version.as_deref())
     .bind(req.total_cpu_millis)
     .bind(req.total_memory_mb)
     .bind(req.total_disk_mb)
-    .bind(private_network_capable)
-    .bind(req.wireguard_public_key.as_deref())
-    .bind(mesh_ip.as_deref())
-    .bind(req.wireguard_listen_port)
+    .bind(wireguard.capable)
+    .bind(wireguard.public_key.as_deref())
+    .bind(wireguard.listen_port)
     .bind(&claims.node_id)
+    .bind(&claims.workspace_id)
+    .bind(&bootstrap_token_hash)
     .execute(state.pool())
     .await?;
+    if registered.rows_affected() == 0 {
+        return Err(ApiError::Unauthorized);
+    }
+
+    if wireguard.capable {
+        let mesh_ip =
+            crate::private_network::assign_node_mesh_ip(state.pool(), &claims.node_id).await?;
+        crate::db::query("UPDATE nodes SET wireguard_mesh_ip = $1 WHERE id = $2")
+            .bind(&mesh_ip)
+            .bind(&claims.node_id)
+            .execute(state.pool())
+            .await?;
+    }
 
     crate::agent_updates::record_agent_snapshot(
         state.pool(),
@@ -136,7 +209,7 @@ async fn register(
     }
 
     crate::scheduler::nudge(&state);
-    if private_network_capable {
+    if wireguard.capable {
         if let Err(e) =
             crate::private_network::sync_workspace(state.pool(), &claims.workspace_id).await
         {
@@ -400,9 +473,12 @@ async fn heartbeat(
         || req.wireguard_public_key.is_some()
         || req.wireguard_listen_port.is_some()
     {
-        let capable =
-            req.private_network_capable.unwrap_or(false) && req.wireguard_public_key.is_some();
-        let mesh_ip = if capable {
+        let wireguard = validate_wireguard(
+            req.private_network_capable.unwrap_or(false),
+            req.wireguard_public_key,
+            req.wireguard_listen_port,
+        )?;
+        let mesh_ip = if wireguard.capable {
             Some(crate::private_network::assign_node_mesh_ip(state.pool(), &claims.node_id).await?)
         } else {
             None
@@ -411,14 +487,14 @@ async fn heartbeat(
             "UPDATE nodes SET \
                 private_network_capable = $1, \
                 wireguard_public_key = $2, \
-                wireguard_mesh_ip = COALESCE($3, wireguard_mesh_ip), \
-                wireguard_listen_port = COALESCE($4, wireguard_listen_port) \
+                wireguard_mesh_ip = $3, \
+                wireguard_listen_port = $4 \
              WHERE id = $5",
         )
-        .bind(capable)
-        .bind(req.wireguard_public_key.as_deref())
+        .bind(wireguard.capable)
+        .bind(wireguard.public_key.as_deref())
         .bind(mesh_ip.as_deref())
-        .bind(req.wireguard_listen_port)
+        .bind(wireguard.listen_port)
         .bind(&claims.node_id)
         .execute(state.pool())
         .await?;
@@ -453,12 +529,9 @@ async fn deployment_status(
 
     let row: Option<(String, String)> = crate::db::query_tuple(
         "SELECT d.service_id, d.status FROM deployments d \
-         WHERE d.id = $1 AND ( \
-             d.node_id = $2 OR \
-             EXISTS ( \
-                 SELECT 1 FROM node_allocations a \
-                 WHERE a.deployment_id = d.id AND a.node_id = $2 \
-             ) \
+         WHERE d.id = $1 AND EXISTS ( \
+             SELECT 1 FROM node_allocations a \
+             WHERE a.deployment_id = d.id AND a.node_id = $2 \
          )",
     )
     .bind(&deployment_id)
@@ -490,7 +563,6 @@ async fn deployment_status(
             node_id = COALESCE(node_id, $6), \
             updated_at = now() \
          WHERE id = $7 AND ( \
-             node_id = $6 OR \
              EXISTS ( \
                  SELECT 1 FROM node_allocations a \
                  WHERE a.deployment_id = deployments.id AND a.node_id = $6 \
@@ -743,7 +815,7 @@ async fn build_status(
     }
 
     let terminal = matches!(update.status.as_str(), "succeeded" | "failed");
-    crate::db::query(
+    let updated = crate::db::query(
         "UPDATE builds SET \
             status = $1, \
             reason = COALESCE($2, reason), \
@@ -752,7 +824,7 @@ async fn build_status(
             image_tag = COALESCE($5, image_tag), \
             finished_at = CASE WHEN $6 THEN now() ELSE finished_at END, \
             updated_at = now() \
-         WHERE id = $7",
+         WHERE id = $7 AND status NOT IN ('succeeded','failed','cancelled')",
     )
     .bind(&update.status)
     .bind(update.reason.as_deref())
@@ -763,6 +835,9 @@ async fn build_status(
     .bind(&build_id)
     .execute(state.pool())
     .await?;
+    if updated.rows_affected() == 0 {
+        return Ok(());
+    }
 
     let Some(deployment_id) = build.deployment_id.clone() else {
         return Ok(());

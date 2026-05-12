@@ -14,17 +14,29 @@ on:
 jobs:
   deploy:
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions: {}
     steps:
       - name: SSH and redeploy
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.DEPLOY_SSH_HOST }}
-          username: ${{ secrets.DEPLOY_SSH_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ secrets.DEPLOY_SSH_PORT || 22 }}
-          script: |
-            set -euo pipefail
-            cd driftbase
-            git pull
-            docker compose down
-            docker compose up -d
+        env:
+          SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+        run: |
+          set -euo pipefail
+          port="${SSH_PORT:-22}"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/driftbase_deploy
+          chmod 600 ~/.ssh/driftbase_deploy
+          ssh \
+            -i ~/.ssh/driftbase_deploy \
+            -p "$port" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=accept-new \
+            "$SSH_USER@$SSH_HOST" <<'EOF'
+          set -euo pipefail
+          cd driftbase
+          git pull --ff-only
+          docker compose down
+          docker compose up -d
+          EOF

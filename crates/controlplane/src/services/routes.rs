@@ -140,6 +140,23 @@ impl TryFrom<ServiceRow> for ServiceSummary {
     }
 }
 
+impl ServiceSummary {
+    fn redacted_for_role(mut self, role: Role) -> Self {
+        if !role.at_least(Role::Member) {
+            self.env_vars = self
+                .env_vars
+                .into_keys()
+                .map(|key| (key, "********".to_string()))
+                .collect();
+        }
+        if !role.at_least(Role::Admin) {
+            self.github_credential_id = None;
+            self.registry_credential_id = None;
+        }
+        self
+    }
+}
+
 async fn resolve_project(
     pool: &sea_orm::DatabaseConnection,
     workspace_id: &Id,
@@ -173,7 +190,7 @@ async fn list(
     .await?;
 
     rows.into_iter()
-        .map(ServiceSummary::try_from)
+        .map(|row| ServiceSummary::try_from(row).map(|svc| svc.redacted_for_role(ctx.role)))
         .collect::<Result<Vec<_>, _>>()
         .map(Json)
 }
@@ -236,6 +253,62 @@ fn default_restart_policy() -> String {
 
 fn trim_opt(s: Option<String>) -> Option<String> {
     s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+fn validate_github_repo_for_pat(repo: &str) -> ApiResult<()> {
+    let repo = repo.trim();
+    if repo.chars().any(|ch| ch.is_control()) {
+        return Err(ApiError::Validation("invalid git_repo".into()));
+    }
+    let Some(rest) = repo.strip_prefix("https://github.com/") else {
+        return Err(ApiError::Validation(
+            "github credentials can only be used with https://github.com repositories".into(),
+        ));
+    };
+    let path = rest
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(".git");
+    let mut parts = path.split('/');
+    let Some(owner) = parts.next() else {
+        return Err(ApiError::Validation("invalid github repository".into()));
+    };
+    let Some(name) = parts.next() else {
+        return Err(ApiError::Validation("invalid github repository".into()));
+    };
+    if parts.next().is_some()
+        || owner.is_empty()
+        || name.is_empty()
+        || owner == "."
+        || owner == ".."
+        || name == "."
+        || name == ".."
+    {
+        return Err(ApiError::Validation("invalid github repository".into()));
+    }
+    Ok(())
+}
+
+async fn validate_credential_kind(
+    pool: &sea_orm::DatabaseConnection,
+    workspace_id: &Id,
+    credential_id: &str,
+    expected_kind: &str,
+) -> ApiResult<()> {
+    let row: Option<(String,)> =
+        crate::db::query_tuple("SELECT kind FROM credentials WHERE id = $1 AND workspace_id = $2")
+            .bind(credential_id)
+            .bind(workspace_id.to_string())
+            .fetch_optional(pool)
+            .await?;
+    let Some((kind,)) = row else {
+        return Err(ApiError::Validation("credential not found".into()));
+    };
+    if kind != expected_kind {
+        return Err(ApiError::Validation("credential kind mismatch".into()));
+    }
+    Ok(())
 }
 
 async fn create(
@@ -345,6 +418,22 @@ async fn create(
         _ => unreachable!(),
     }
 
+    if github_credential_id.is_some() || registry_credential_id.is_some() {
+        membership::require(&ctx, Role::Admin)?;
+    }
+    if let Some(credential_id) = github_credential_id.as_deref() {
+        let repo = git_repo.as_deref().ok_or_else(|| {
+            ApiError::Validation("git_repo is required when using a github credential".into())
+        })?;
+        validate_github_repo_for_pat(repo)?;
+        validate_credential_kind(state.pool(), &ctx.workspace_id, credential_id, "github_pat")
+            .await?;
+    }
+    if let Some(credential_id) = registry_credential_id.as_deref() {
+        validate_credential_kind(state.pool(), &ctx.workspace_id, credential_id, "registry")
+            .await?;
+    }
+
     let resources = req.resources.unwrap_or_default();
 
     let id = Id::new();
@@ -403,7 +492,9 @@ async fn show(
     .await?;
 
     let row = row.ok_or(ApiError::NotFound)?;
-    Ok(Json(ServiceSummary::try_from(row)?))
+    Ok(Json(
+        ServiceSummary::try_from(row)?.redacted_for_role(ctx.role),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -469,6 +560,58 @@ async fn update(
     }
 
     let registry_repo = normalize_registry_repo(req.registry_repo);
+    let git_repo = trim_opt(req.git_repo);
+    let github_credential_id = trim_opt(req.github_credential_id);
+    let registry_credential_id = trim_opt(req.registry_credential_id);
+
+    if git_repo.is_some() || github_credential_id.is_some() || registry_credential_id.is_some() {
+        let current: Option<(Option<String>, Option<String>)> = crate::db::query_tuple(
+            "SELECT git_repo, github_credential_id FROM services \
+             WHERE project_id = $1 AND slug = $2",
+        )
+        .bind(project_id.to_string())
+        .bind(&service_slug)
+        .fetch_optional(state.pool())
+        .await?;
+        let Some((current_git_repo, current_github_credential_id)) = current else {
+            return Err(ApiError::NotFound);
+        };
+
+        if github_credential_id.is_some()
+            || registry_credential_id.is_some()
+            || (git_repo.is_some() && current_github_credential_id.is_some())
+        {
+            membership::require(&ctx, Role::Admin)?;
+        }
+
+        let effective_github_credential_id = github_credential_id
+            .as_deref()
+            .or(current_github_credential_id.as_deref());
+        if let Some(credential_id) = effective_github_credential_id {
+            let effective_git_repo = git_repo
+                .as_deref()
+                .or(current_git_repo.as_deref())
+                .ok_or_else(|| {
+                    ApiError::Validation(
+                        "git_repo is required when using a github credential".into(),
+                    )
+                })?;
+            validate_github_repo_for_pat(effective_git_repo)?;
+            if github_credential_id.is_some() {
+                validate_credential_kind(
+                    state.pool(),
+                    &ctx.workspace_id,
+                    credential_id,
+                    "github_pat",
+                )
+                .await?;
+            }
+        }
+        if let Some(credential_id) = registry_credential_id.as_deref() {
+            validate_credential_kind(state.pool(), &ctx.workspace_id, credential_id, "registry")
+                .await?;
+        }
+    }
 
     let row: ServiceRow = crate::db::query_as(format!(
         "UPDATE services SET \
@@ -499,21 +642,23 @@ async fn update(
     .bind(req.resources.map(|v| json!(v)))
     .bind(req.replicas)
     .bind(req.restart_policy.as_deref())
-    .bind(req.git_repo.as_deref())
+    .bind(git_repo.as_deref())
     .bind(req.git_branch.as_deref())
     .bind(req.dockerfile_path.as_deref())
     .bind(req.root_dir.as_deref())
     .bind(req.builder.as_deref())
     .bind(registry_repo.as_deref())
-    .bind(req.github_credential_id.as_deref())
-    .bind(req.registry_credential_id.as_deref())
+    .bind(github_credential_id.as_deref())
+    .bind(registry_credential_id.as_deref())
     .bind(project_id.to_string())
     .bind(&service_slug)
     .fetch_optional(state.pool())
     .await?
     .ok_or(ApiError::NotFound)?;
 
-    Ok(Json(ServiceSummary::try_from(row)?))
+    Ok(Json(
+        ServiceSummary::try_from(row)?.redacted_for_role(ctx.role),
+    ))
 }
 
 fn normalize_registry_repo(repo: Option<String>) -> Option<String> {
@@ -625,6 +770,9 @@ async fn deploy(
                 return Err(ApiError::Validation(
                     "git service missing git_repo — fix it in Settings".into(),
                 ));
+            }
+            if summary.github_credential_id.is_some() {
+                validate_github_repo_for_pat(summary.git_repo.as_deref().unwrap_or_default())?;
             }
             // image_ref is filled in by the build; the deployment holds a
             // placeholder until then so the row insert (which NOT NULLs
