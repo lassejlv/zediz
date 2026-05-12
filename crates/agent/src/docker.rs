@@ -6,9 +6,10 @@ use bollard::container::{
 };
 use bollard::image::CreateImageOptions;
 use bollard::models::{
-    EndpointIpamConfig, EndpointSettings, HostConfig, PortBinding, RestartPolicy,
+    EndpointIpamConfig, EndpointSettings, HostConfig, Ipam, IpamConfig, PortBinding, RestartPolicy,
     RestartPolicyNameEnum,
 };
+use bollard::network::CreateNetworkOptions;
 use bollard::Docker;
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
@@ -124,6 +125,10 @@ impl DockerExec {
         let mut labels = HashMap::new();
         labels.insert("driftbase.deployment_id".into(), spec.deployment_id.clone());
         labels.insert("driftbase.managed".into(), "true".into());
+
+        if let Some(private) = spec.private_network.as_ref() {
+            self.ensure_private_network(private).await?;
+        }
 
         // If a Hetzner volume is attached, make sure it's mounted on the
         // host before handing a bind to bollard. This is idempotent —
@@ -323,6 +328,51 @@ impl DockerExec {
             }) => Ok(()),
             Err(e) => Err(e.into()),
         }
+    }
+
+    async fn ensure_private_network(&self, private: &PrivateNetworkSpec) -> Result<()> {
+        let Some(node_subnet) = private.node_subnet.as_deref() else {
+            return Ok(());
+        };
+        let Some(gateway_ip) = private.gateway_ip.as_deref() else {
+            return Ok(());
+        };
+
+        let existing = self.docker.list_networks::<String>(None).await?;
+        if existing
+            .iter()
+            .any(|network| network.name.as_deref() == Some(private.network_name.as_str()))
+        {
+            return Ok(());
+        }
+
+        let mut labels = HashMap::new();
+        labels.insert("driftbase.managed".to_string(), "true".to_string());
+
+        self.docker
+            .create_network(CreateNetworkOptions {
+                name: private.network_name.clone(),
+                check_duplicate: true,
+                driver: "bridge".to_string(),
+                internal: false,
+                attachable: false,
+                ingress: false,
+                ipam: Ipam {
+                    driver: Some("default".to_string()),
+                    config: Some(vec![IpamConfig {
+                        subnet: Some(node_subnet.to_string()),
+                        gateway: Some(gateway_ip.to_string()),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                },
+                enable_ipv6: false,
+                options: HashMap::new(),
+                labels,
+            })
+            .await
+            .with_context(|| format!("creating docker network {}", private.network_name))?;
+        Ok(())
     }
 
     /// One-shot stats snapshot for a deployment's container. Uses bollard's
@@ -578,6 +628,8 @@ pub struct VolumeMount {
 #[derive(Debug, Clone)]
 pub struct PrivateNetworkSpec {
     pub network_name: String,
+    pub node_subnet: Option<String>,
+    pub gateway_ip: Option<String>,
     pub ip_address: String,
     pub dns_ip: String,
     pub aliases: Vec<String>,

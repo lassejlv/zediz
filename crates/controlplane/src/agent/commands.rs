@@ -179,6 +179,8 @@ pub struct VolumeMount<'a> {
 
 pub struct PrivateNetwork<'a> {
     pub network_name: &'a str,
+    pub node_subnet: &'a str,
+    pub gateway_ip: &'a str,
     pub ip_address: &'a str,
     pub dns_ip: &'a str,
     pub aliases: &'a [String],
@@ -209,6 +211,8 @@ pub fn pull_and_run_payload(p: &PullAndRunPayload<'_>) -> JsonValue {
     let private_network = p.private_network.map(|n| {
         json!({
             "network_name": n.network_name,
+            "node_subnet": n.node_subnet,
+            "gateway_ip": n.gateway_ip,
             "ip_address": n.ip_address,
             "dns_ip": n.dns_ip,
             "aliases": n.aliases,

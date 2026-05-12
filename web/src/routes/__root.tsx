@@ -28,7 +28,7 @@ function RootComponent() {
             <>
               {me.data.is_platform_admin ? (
                 <Link
-                  to="/admin/users"
+                  to="/admin"
                   className="text-xs text-[var(--color-muted)] hover:text-[var(--color-fg)]"
                 >
                   Admin

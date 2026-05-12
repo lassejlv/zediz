@@ -728,6 +728,14 @@ fn parse_run_spec(deployment_id: &str, payload: &serde_json::Value) -> Result<Ru
 
     let private_network = payload.get("private_network").and_then(|v| {
         let network_name = v.get("network_name")?.as_str()?.to_string();
+        let node_subnet = v
+            .get("node_subnet")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let gateway_ip = v
+            .get("gateway_ip")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         let ip_address = v.get("ip_address")?.as_str()?.to_string();
         let dns_ip = v.get("dns_ip")?.as_str()?.to_string();
         let aliases = v
@@ -742,6 +750,8 @@ fn parse_run_spec(deployment_id: &str, payload: &serde_json::Value) -> Result<Ru
             .unwrap_or_default();
         Some(PrivateNetworkSpec {
             network_name,
+            node_subnet,
+            gateway_ip,
             ip_address,
             dns_ip,
             aliases,
@@ -777,6 +787,8 @@ mod tests {
                 "memory_mb": 256,
                 "private_network": {
                     "network_name": "driftbase-pn-project",
+                    "node_subnet": "10.64.1.0/24",
+                    "gateway_ip": "10.64.1.1",
                     "ip_address": "10.64.1.10",
                     "dns_ip": "10.64.1.2",
                     "aliases": ["api", "api.driftbase.internal"]
@@ -786,6 +798,8 @@ mod tests {
         .unwrap();
         let private = spec.private_network.unwrap();
         assert_eq!(private.network_name, "driftbase-pn-project");
+        assert_eq!(private.node_subnet.as_deref(), Some("10.64.1.0/24"));
+        assert_eq!(private.gateway_ip.as_deref(), Some("10.64.1.1"));
         assert_eq!(private.ip_address, "10.64.1.10");
         assert_eq!(private.aliases[1], "api.driftbase.internal");
     }

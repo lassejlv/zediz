@@ -13,6 +13,8 @@ const WG_LISTEN_PORT: i32 = 51820;
 #[derive(Debug, Clone)]
 pub struct DeploymentPrivateNetwork {
     pub network_name: String,
+    pub node_subnet: String,
+    pub gateway_ip: String,
     pub ip_address: String,
     pub dns_ip: String,
     pub aliases: Vec<String>,
@@ -27,6 +29,7 @@ struct ProjectNetworkRow {
 #[derive(Debug, sea_orm::FromQueryResult)]
 struct ProjectSubnetRow {
     cidr: String,
+    gateway_ip: String,
     dns_ip: String,
 }
 
@@ -132,6 +135,8 @@ pub async fn ensure_deployment_private_network(
     let ip_address = ensure_deployment_ip(pool, deployment_id, &subnet.cidr).await?;
     Ok(DeploymentPrivateNetwork {
         network_name: network_name(project_id),
+        node_subnet: subnet.cidr,
+        gateway_ip: subnet.gateway_ip,
         ip_address,
         dns_ip: subnet.dns_ip,
         aliases: vec![service_slug.to_string(), private_hostname(service_slug)],
@@ -253,7 +258,7 @@ async fn ensure_node_subnet(
     node_id: &str,
 ) -> ApiResult<ProjectSubnetRow> {
     let existing = crate::db::query_as::<ProjectSubnetRow>(
-        "SELECT cidr, dns_ip \
+        "SELECT cidr, gateway_ip, dns_ip \
          FROM project_network_node_subnets \
          WHERE project_network_id = $1 AND node_id = $2",
     )
@@ -283,7 +288,7 @@ async fn ensure_node_subnet(
                 (project_network_id, node_id, cidr, gateway_ip, dns_ip) \
              VALUES ($1, $2, $3, $4, $5) \
              ON CONFLICT (project_network_id, node_id) DO NOTHING \
-             RETURNING cidr, dns_ip",
+             RETURNING cidr, gateway_ip, dns_ip",
         )
         .bind(&project.id)
         .bind(node_id)
@@ -296,7 +301,7 @@ async fn ensure_node_subnet(
             Ok(Some(row)) => return Ok(row),
             Ok(None) => {
                 if let Some(row) = crate::db::query_as::<ProjectSubnetRow>(
-                    "SELECT cidr, dns_ip \
+                    "SELECT cidr, gateway_ip, dns_ip \
                      FROM project_network_node_subnets \
                      WHERE project_network_id = $1 AND node_id = $2",
                 )

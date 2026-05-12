@@ -1080,6 +1080,8 @@ async fn dispatch_to_agent(
 
     let private_network_payload = private_network.map(|n| commands::PrivateNetwork {
         network_name: &n.network_name,
+        node_subnet: &n.node_subnet,
+        gateway_ip: &n.gateway_ip,
         ip_address: &n.ip_address,
         dns_ip: &n.dns_ip,
         aliases: &n.aliases,
