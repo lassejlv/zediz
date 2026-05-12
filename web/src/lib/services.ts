@@ -91,6 +91,11 @@ export interface CreateServiceInput {
   registry_repo?: string;
   github_credential_id?: string;
   registry_credential_id?: string;
+  github_installation_id?: number;
+  github_repository_id?: number;
+  github_repository_full_name?: string;
+  github_auto_deploy?: boolean;
+  github_statuses_enabled?: boolean;
 }
 
 export function useCreateService(workspaceSlug: string, projectSlug: string) {
@@ -125,6 +130,11 @@ export interface UpdateServiceInput {
   registry_repo?: string;
   github_credential_id?: string;
   registry_credential_id?: string;
+  github_installation_id?: number;
+  github_repository_id?: number;
+  github_repository_full_name?: string;
+  github_auto_deploy?: boolean;
+  github_statuses_enabled?: boolean;
 }
 
 export function useUpdateService(

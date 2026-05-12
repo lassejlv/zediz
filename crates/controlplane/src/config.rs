@@ -36,11 +36,25 @@ pub struct Config {
     /// mode users do not connect their own Hetzner account; Driftbase owns
     /// provisioning through this local control-plane secret.
     pub managed_hetzner_api_token: Option<String>,
+    /// GitHub App configuration for repository-backed builds. When unset the
+    /// legacy GitHub PAT path remains available, but GitHub App connect UI and
+    /// webhook processing are disabled.
+    pub github_app: Option<GitHubAppConfig>,
 }
 
 pub struct LoadedConfig {
     pub config: Config,
     pub master_key: MasterKey,
+}
+
+#[derive(Clone, Debug)]
+pub struct GitHubAppConfig {
+    pub app_id: i64,
+    pub client_id: String,
+    pub client_secret: String,
+    pub private_key: String,
+    pub webhook_secret: String,
+    pub slug: String,
 }
 
 impl Config {
@@ -78,6 +92,7 @@ impl Config {
         let default_hetzner_server_type = optional_env(&["DRIFTBASE_DEFAULT_HETZNER_SERVER_TYPE"]);
         let setup_token = optional_env(&["DRIFTBASE_SETUP_TOKEN"]);
         let managed_hetzner_api_token = optional_env(&["DRIFTBASE_MANAGED_HETZNER_API_TOKEN"]);
+        let github_app = load_github_app_config()?;
 
         Ok(LoadedConfig {
             config: Self {
@@ -92,6 +107,7 @@ impl Config {
                 default_hetzner_server_type,
                 setup_token,
                 managed_hetzner_api_token,
+                github_app,
             },
             master_key,
         })
@@ -105,6 +121,49 @@ fn optional_env(names: &[&str]) -> Option<String> {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
     })
+}
+
+fn load_github_app_config() -> Result<Option<GitHubAppConfig>> {
+    let app_id = optional_env(&["DRIFTBASE_GITHUB_APP_ID"]);
+    let client_id = optional_env(&["DRIFTBASE_GITHUB_APP_CLIENT_ID"]);
+    let client_secret = optional_env(&["DRIFTBASE_GITHUB_APP_CLIENT_SECRET"]);
+    let private_key = optional_env(&["DRIFTBASE_GITHUB_APP_PRIVATE_KEY"]);
+    let webhook_secret = optional_env(&["DRIFTBASE_GITHUB_APP_WEBHOOK_SECRET"]);
+    let slug = optional_env(&["DRIFTBASE_GITHUB_APP_SLUG"]);
+
+    let values = [
+        app_id.as_deref(),
+        client_id.as_deref(),
+        client_secret.as_deref(),
+        private_key.as_deref(),
+        webhook_secret.as_deref(),
+        slug.as_deref(),
+    ];
+    if values.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    if values.iter().any(Option::is_none) {
+        return Err(anyhow!(
+            "GitHub App config is incomplete; set DRIFTBASE_GITHUB_APP_ID, \
+             DRIFTBASE_GITHUB_APP_CLIENT_ID, DRIFTBASE_GITHUB_APP_CLIENT_SECRET, \
+             DRIFTBASE_GITHUB_APP_PRIVATE_KEY, DRIFTBASE_GITHUB_APP_WEBHOOK_SECRET, \
+             and DRIFTBASE_GITHUB_APP_SLUG"
+        ));
+    }
+
+    let app_id = app_id
+        .expect("checked above")
+        .parse::<i64>()
+        .context("DRIFTBASE_GITHUB_APP_ID")?;
+
+    Ok(Some(GitHubAppConfig {
+        app_id,
+        client_id: client_id.expect("checked above"),
+        client_secret: client_secret.expect("checked above"),
+        private_key: private_key.expect("checked above").replace("\\n", "\n"),
+        webhook_secret: webhook_secret.expect("checked above"),
+        slug: slug.expect("checked above"),
+    }))
 }
 
 #[cfg(test)]

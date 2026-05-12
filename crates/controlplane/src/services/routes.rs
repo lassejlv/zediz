@@ -8,6 +8,7 @@ use serde_json::{json, Value as JsonValue};
 
 use crate::auth::AuthUser;
 use crate::builds;
+use crate::builds::BuildTrigger;
 use crate::deployments;
 use crate::error::{ApiError, ApiResult};
 use crate::projects::validate_slug;
@@ -42,7 +43,9 @@ pub fn router() -> Router<AppState> {
 const SERVICE_COLUMNS: &str = "id, slug, name, source, image_ref, env_vars, ports, resources, \
      replicas, restart_policy, git_repo, git_branch, git_commit, \
      dockerfile_path, root_dir, builder, registry_repo, \
-     github_credential_id, registry_credential_id, created_at, updated_at";
+     github_credential_id, registry_credential_id, github_installation_id, \
+     github_repository_id, github_repository_full_name, github_auto_deploy, \
+     github_statuses_enabled, created_at, updated_at";
 
 #[derive(Serialize)]
 pub struct ServiceSummary {
@@ -66,6 +69,11 @@ pub struct ServiceSummary {
     pub registry_repo: Option<String>,
     pub github_credential_id: Option<Id>,
     pub registry_credential_id: Option<Id>,
+    pub github_installation_id: Option<i64>,
+    pub github_repository_id: Option<i64>,
+    pub github_repository_full_name: Option<String>,
+    pub github_auto_deploy: bool,
+    pub github_statuses_enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -91,6 +99,11 @@ struct ServiceRow {
     registry_repo: Option<String>,
     github_credential_id: Option<String>,
     registry_credential_id: Option<String>,
+    github_installation_id: Option<i64>,
+    github_repository_id: Option<i64>,
+    github_repository_full_name: Option<String>,
+    github_auto_deploy: bool,
+    github_statuses_enabled: bool,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -134,6 +147,11 @@ impl TryFrom<ServiceRow> for ServiceSummary {
                 .map(|s| s.parse())
                 .transpose()
                 .map_err(|e: ulid::DecodeError| ApiError::Internal(anyhow::anyhow!("{e}")))?,
+            github_installation_id: r.github_installation_id,
+            github_repository_id: r.github_repository_id,
+            github_repository_full_name: r.github_repository_full_name,
+            github_auto_deploy: r.github_auto_deploy,
+            github_statuses_enabled: r.github_statuses_enabled,
             created_at: r.created_at,
             updated_at: r.updated_at,
         })
@@ -242,6 +260,16 @@ pub struct CreateServiceRequest {
     pub github_credential_id: Option<String>,
     #[serde(default)]
     pub registry_credential_id: Option<String>,
+    #[serde(default)]
+    pub github_installation_id: Option<i64>,
+    #[serde(default)]
+    pub github_repository_id: Option<i64>,
+    #[serde(default)]
+    pub github_repository_full_name: Option<String>,
+    #[serde(default = "default_true")]
+    pub github_auto_deploy: bool,
+    #[serde(default = "default_true")]
+    pub github_statuses_enabled: bool,
 }
 
 fn default_replicas() -> i32 {
@@ -249,6 +277,9 @@ fn default_replicas() -> i32 {
 }
 fn default_restart_policy() -> String {
     "on-failure".into()
+}
+fn default_true() -> bool {
+    true
 }
 
 fn trim_opt(s: Option<String>) -> Option<String> {
@@ -311,6 +342,41 @@ async fn validate_credential_kind(
     Ok(())
 }
 
+async fn ensure_github_repo_available(
+    pool: &sea_orm::DatabaseConnection,
+    workspace_id: &str,
+    installation_id: Option<i64>,
+    repository_id: Option<i64>,
+) -> ApiResult<()> {
+    let (Some(installation_id), Some(repository_id)) = (installation_id, repository_id) else {
+        return Ok(());
+    };
+    let row: Option<(bool,)> = crate::db::query_tuple(
+        "SELECT i.active \
+         FROM github_installations i \
+         JOIN github_repositories r \
+           ON r.workspace_id = i.workspace_id \
+          AND r.installation_id = i.installation_id \
+         WHERE i.workspace_id = $1 \
+           AND i.installation_id = $2 \
+           AND r.repository_id = $3",
+    )
+    .bind(workspace_id)
+    .bind(installation_id)
+    .bind(repository_id)
+    .fetch_optional(pool)
+    .await?;
+    match row {
+        Some((true,)) => Ok(()),
+        Some((false,)) => Err(ApiError::Validation(
+            "GitHub App installation is inactive for this repository".into(),
+        )),
+        None => Err(ApiError::Validation(
+            "GitHub App no longer has access to this repository".into(),
+        )),
+    }
+}
+
 async fn create(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -360,6 +426,9 @@ async fn create(
         registry_repo,
         github_credential_id,
         registry_credential_id,
+        github_installation_id,
+        github_repository_id,
+        mut github_repository_full_name,
     );
     match source {
         "image" => {
@@ -373,6 +442,9 @@ async fn create(
                 || req.registry_repo.is_some()
                 || req.github_credential_id.is_some()
                 || req.registry_credential_id.is_some()
+                || req.github_installation_id.is_some()
+                || req.github_repository_id.is_some()
+                || req.github_repository_full_name.is_some()
             {
                 return Err(ApiError::Validation(
                     "git fields not allowed for image services".into(),
@@ -387,10 +459,38 @@ async fn create(
             registry_repo = None;
             github_credential_id = None;
             registry_credential_id = None;
+            github_installation_id = None;
+            github_repository_id = None;
+            github_repository_full_name = None;
         }
         "git" => {
+            github_installation_id = req.github_installation_id;
+            github_repository_id = req.github_repository_id;
+            github_repository_full_name = trim_opt(req.github_repository_full_name);
+            let github_repo = if let (Some(installation_id), Some(repository_id)) =
+                (github_installation_id, github_repository_id)
+            {
+                let repo = crate::github_app::repository_for_service_selection(
+                    state.pool(),
+                    &ctx.workspace_id.to_string(),
+                    installation_id,
+                    repository_id,
+                )
+                .await
+                .map_err(ApiError::Internal)?
+                .ok_or_else(|| {
+                    ApiError::Validation(
+                        "selected GitHub repository is not available to this workspace".into(),
+                    )
+                })?;
+                github_repository_full_name = Some(repo.full_name.clone());
+                Some(repo.clone_url)
+            } else {
+                None
+            };
             git_repo = Some(
                 trim_opt(req.git_repo)
+                    .or(github_repo)
                     .ok_or_else(|| ApiError::Validation("git_repo is required".into()))?,
             );
             git_branch = Some(trim_opt(req.git_branch).unwrap_or_else(|| "main".into()));
@@ -412,6 +512,11 @@ async fn create(
             registry_repo = normalize_registry_repo(req.registry_repo);
             github_credential_id = trim_opt(req.github_credential_id);
             registry_credential_id = trim_opt(req.registry_credential_id);
+            if github_installation_id.is_some() != github_repository_id.is_some() {
+                return Err(ApiError::Validation(
+                    "github_installation_id and github_repository_id must be set together".into(),
+                ));
+            }
             // image_ref starts NULL; filled in by the first successful build.
             image_ref = None;
         }
@@ -433,6 +538,13 @@ async fn create(
         validate_credential_kind(state.pool(), &ctx.workspace_id, credential_id, "registry")
             .await?;
     }
+    ensure_github_repo_available(
+        state.pool(),
+        &ctx.workspace_id.to_string(),
+        github_installation_id,
+        github_repository_id,
+    )
+    .await?;
 
     let resources = req.resources.unwrap_or_default();
 
@@ -441,8 +553,10 @@ async fn create(
         "INSERT INTO services ( \
             id, project_id, slug, name, source, image_ref, env_vars, ports, resources, \
             replicas, restart_policy, git_repo, git_branch, dockerfile_path, \
-            root_dir, builder, registry_repo, github_credential_id, registry_credential_id \
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) \
+            root_dir, builder, registry_repo, github_credential_id, registry_credential_id, \
+            github_installation_id, github_repository_id, github_repository_full_name, \
+            github_auto_deploy, github_statuses_enabled \
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24) \
          ON CONFLICT (project_id, slug) DO NOTHING \
          RETURNING {cols}",
         cols = SERVICE_COLUMNS,
@@ -467,6 +581,11 @@ async fn create(
         .bind(registry_repo.as_deref())
         .bind(github_credential_id.as_deref())
         .bind(registry_credential_id.as_deref())
+        .bind(github_installation_id)
+        .bind(github_repository_id)
+        .bind(github_repository_full_name.as_deref())
+        .bind(req.github_auto_deploy)
+        .bind(req.github_statuses_enabled)
         .fetch_optional(state.pool())
         .await?;
 
@@ -529,6 +648,16 @@ pub struct UpdateServiceRequest {
     pub github_credential_id: Option<String>,
     #[serde(default)]
     pub registry_credential_id: Option<String>,
+    #[serde(default)]
+    pub github_installation_id: Option<i64>,
+    #[serde(default)]
+    pub github_repository_id: Option<i64>,
+    #[serde(default)]
+    pub github_repository_full_name: Option<String>,
+    #[serde(default)]
+    pub github_auto_deploy: Option<bool>,
+    #[serde(default)]
+    pub github_statuses_enabled: Option<bool>,
 }
 
 async fn update(
@@ -560,9 +689,10 @@ async fn update(
     }
 
     let registry_repo = normalize_registry_repo(req.registry_repo);
-    let git_repo = trim_opt(req.git_repo);
+    let mut git_repo = trim_opt(req.git_repo);
     let github_credential_id = trim_opt(req.github_credential_id);
     let registry_credential_id = trim_opt(req.registry_credential_id);
+    let mut github_repository_full_name = trim_opt(req.github_repository_full_name);
 
     if git_repo.is_some() || github_credential_id.is_some() || registry_credential_id.is_some() {
         let current: Option<(Option<String>, Option<String>)> = crate::db::query_tuple(
@@ -613,6 +743,49 @@ async fn update(
         }
     }
 
+    if let (Some(installation_id), Some(repository_id)) =
+        (req.github_installation_id, req.github_repository_id)
+    {
+        let repo = crate::github_app::repository_for_service_selection(
+            state.pool(),
+            &ctx.workspace_id.to_string(),
+            installation_id,
+            repository_id,
+        )
+        .await
+        .map_err(ApiError::Internal)?
+        .ok_or_else(|| {
+            ApiError::Validation(
+                "selected GitHub repository is not available to this workspace".into(),
+            )
+        })?;
+        if github_repository_full_name
+            .as_deref()
+            .is_some_and(|full_name| full_name != repo.full_name)
+        {
+            return Err(ApiError::Validation(
+                "github_repository_full_name does not match selected repository".into(),
+            ));
+        }
+        if git_repo.is_none() {
+            git_repo = Some(repo.clone_url);
+        }
+        if github_repository_full_name.is_none() {
+            github_repository_full_name = Some(repo.full_name);
+        }
+    } else if req.github_installation_id.is_some() || req.github_repository_id.is_some() {
+        return Err(ApiError::Validation(
+            "github_installation_id and github_repository_id must be set together".into(),
+        ));
+    }
+    ensure_github_repo_available(
+        state.pool(),
+        &ctx.workspace_id.to_string(),
+        req.github_installation_id,
+        req.github_repository_id,
+    )
+    .await?;
+
     let row: ServiceRow = crate::db::query_as(format!(
         "UPDATE services SET \
             name = COALESCE($1, name), \
@@ -630,8 +803,13 @@ async fn update(
             registry_repo = COALESCE($13, registry_repo), \
             github_credential_id = COALESCE($14, github_credential_id), \
             registry_credential_id = COALESCE($15, registry_credential_id), \
+            github_installation_id = COALESCE($16, github_installation_id), \
+            github_repository_id = COALESCE($17, github_repository_id), \
+            github_repository_full_name = COALESCE($18, github_repository_full_name), \
+            github_auto_deploy = COALESCE($19, github_auto_deploy), \
+            github_statuses_enabled = COALESCE($20, github_statuses_enabled), \
             updated_at = now() \
-         WHERE project_id = $16 AND slug = $17 \
+         WHERE project_id = $21 AND slug = $22 \
          RETURNING {cols}",
         cols = SERVICE_COLUMNS,
     ))
@@ -650,6 +828,11 @@ async fn update(
     .bind(registry_repo.as_deref())
     .bind(github_credential_id.as_deref())
     .bind(registry_credential_id.as_deref())
+    .bind(req.github_installation_id)
+    .bind(req.github_repository_id)
+    .bind(github_repository_full_name.as_deref())
+    .bind(req.github_auto_deploy)
+    .bind(req.github_statuses_enabled)
     .bind(project_id.to_string())
     .bind(&service_slug)
     .fetch_optional(state.pool())
@@ -772,6 +955,13 @@ async fn deploy(
                     "git service missing git_repo — fix it in Settings".into(),
                 ));
             }
+            ensure_github_repo_available(
+                state.pool(),
+                &ctx.workspace_id.to_string(),
+                summary.github_installation_id,
+                summary.github_repository_id,
+            )
+            .await?;
             if summary.github_credential_id.is_some() {
                 validate_github_repo_for_pat(summary.git_repo.as_deref().unwrap_or_default())?;
             }
@@ -804,6 +994,98 @@ async fn deploy(
     crate::scheduler::nudge(&state);
 
     Ok(Json(deployment))
+}
+
+pub struct QueuedGitDeployment {
+    pub deployment_id: String,
+    pub build_id: String,
+}
+
+pub async fn queue_git_deployment_for_service(
+    state: &AppState,
+    service_id: &str,
+    trigger: Option<BuildTrigger<'_>>,
+) -> ApiResult<QueuedGitDeployment> {
+    let service: Option<ServiceRow> = crate::db::query_as(format!(
+        "SELECT {cols} FROM services WHERE id = $1",
+        cols = SERVICE_COLUMNS,
+    ))
+    .bind(service_id)
+    .fetch_optional(state.pool())
+    .await?;
+    let summary = ServiceSummary::try_from(service.ok_or(ApiError::NotFound)?)?;
+    if summary.source != "git" {
+        return Err(ApiError::Validation("service is not a git service".into()));
+    }
+    if summary.git_repo.is_none() {
+        return Err(ApiError::Validation(
+            "git service missing git_repo — fix it in Settings".into(),
+        ));
+    }
+
+    let ids: Option<(String, String)> = crate::db::query_tuple(
+        "SELECT p.id, p.workspace_id \
+         FROM services s \
+         JOIN projects p ON p.id = s.project_id \
+         WHERE s.id = $1",
+    )
+    .bind(service_id)
+    .fetch_optional(state.pool())
+    .await?;
+    let (project_id, workspace_id) = ids.ok_or(ApiError::NotFound)?;
+    ensure_github_repo_available(
+        state.pool(),
+        &workspace_id,
+        summary.github_installation_id,
+        summary.github_repository_id,
+    )
+    .await?;
+
+    let uses_host_ports = summary.ports.iter().any(|p| p.host_port.is_some());
+    let has_volume = crate::volumes::fetch_for_service(state.pool(), &summary.id.to_string())
+        .await?
+        .is_some();
+    cancel_pre_deploy(
+        state.pool(),
+        &summary.id.to_string(),
+        uses_host_ports || has_volume,
+    )
+    .await?;
+
+    let project_id: Id = project_id
+        .parse()
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("{e}")))?;
+    let workspace_id: Id = workspace_id
+        .parse()
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("{e}")))?;
+    let deployment = deployments::create_deployment(
+        state.pool(),
+        &summary,
+        &project_id,
+        "pending-build",
+        &workspace_id,
+    )
+    .await?;
+    crate::db::query(
+        "UPDATE deployments SET status = 'building', reason = 'awaiting build', \
+                                updated_at = now() \
+         WHERE id = $1",
+    )
+    .bind(deployment.id.to_string())
+    .execute(state.pool())
+    .await?;
+    let build_id = builds::create_queued_with_trigger(
+        state.pool(),
+        &summary.id.to_string(),
+        &deployment.id.to_string(),
+        trigger,
+    )
+    .await?;
+
+    Ok(QueuedGitDeployment {
+        deployment_id: deployment.id.to_string(),
+        build_id: build_id.to_string(),
+    })
 }
 
 /// Retire deployments that are about to be superseded by a new deploy.

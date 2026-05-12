@@ -21,6 +21,7 @@ mod deployments;
 mod domains;
 mod entity;
 mod error;
+mod github_app;
 mod migration;
 mod nodes;
 mod private_network;
@@ -54,6 +55,8 @@ struct Health {
 #[derive(Serialize)]
 struct PublicSettings {
     registry_site: Option<String>,
+    github_app_configured: bool,
+    github_app_slug: Option<String>,
 }
 
 #[tokio::main]
@@ -121,6 +124,12 @@ fn router(state: AppState) -> Router {
             get(|State(state): State<AppState>| async move {
                 Json(PublicSettings {
                     registry_site: state.config().registry_site.clone(),
+                    github_app_configured: state.config().github_app.is_some(),
+                    github_app_slug: state
+                        .config()
+                        .github_app
+                        .as_ref()
+                        .map(|app| app.slug.clone()),
                 })
             }),
         )
@@ -129,6 +138,7 @@ fn router(state: AppState) -> Router {
         .merge(workspaces::routes::router())
         .merge(workspaces::invites::router())
         .merge(credentials::routes::router())
+        .merge(github_app::routes::router())
         .merge(ssh_keys::routes::router())
         .merge(projects::routes::router())
         .merge(services::routes::router())

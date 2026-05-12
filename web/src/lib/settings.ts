@@ -4,6 +4,8 @@ import { api } from './api';
 /** Non-secret server-side config exposed to the frontend. */
 export interface PublicSettings {
   registry_site: string | null;
+  github_app_configured: boolean;
+  github_app_slug: string | null;
 }
 
 export function publicSettingsQuery() {

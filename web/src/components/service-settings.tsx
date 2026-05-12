@@ -5,12 +5,15 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Check, Eye, EyeOff, Plus, Trash2 } from 'lucide-react';
 import {
   useUpdateService,
   useVariableReferences,
   type UpdateServiceInput,
 } from '@/lib/services';
+import { githubRepositoriesQuery, type GitHubRepositorySummary } from '@/lib/github';
+import { usePublicSettings } from '@/lib/settings';
 import { ApiError } from '@/lib/api';
 import { EnvReferenceInput } from '@/components/env-reference-input';
 import {
@@ -545,11 +548,21 @@ function GitSourceSection({
     projectSlug,
     service.slug,
   );
+  const settings = usePublicSettings();
+  const githubRepositories = useQuery({
+    ...githubRepositoriesQuery(workspaceSlug),
+    enabled: !!settings.data?.github_app_configured,
+  });
   const [repo, setRepo] = useState(service.git_repo ?? '');
   const [branch, setBranch] = useState(service.git_branch ?? 'main');
   const [builder, setBuilder] = useState<ServiceBuilder>(service.builder);
   const [dockerfile, setDockerfile] = useState(service.dockerfile_path ?? '');
   const [rootDir, setRootDir] = useState(service.root_dir ?? '');
+  const [githubRepoKey, setGithubRepoKey] = useState(
+    service.github_installation_id && service.github_repository_id
+      ? `${service.github_installation_id}:${service.github_repository_id}`
+      : '',
+  );
 
   useEffect(() => {
     setRepo(service.git_repo ?? '');
@@ -557,14 +570,25 @@ function GitSourceSection({
     setBuilder(service.builder);
     setDockerfile(service.dockerfile_path ?? '');
     setRootDir(service.root_dir ?? '');
+    setGithubRepoKey(
+      service.github_installation_id && service.github_repository_id
+        ? `${service.github_installation_id}:${service.github_repository_id}`
+        : '',
+    );
   }, [service]);
 
+  const githubRepos = githubRepositories.data ?? [];
+  const selectedGithubRepo = githubRepos.find((r) => githubRepoValue(r) === githubRepoKey);
   const dirty =
     repo.trim() !== (service.git_repo ?? '') ||
     branch.trim() !== (service.git_branch ?? '') ||
     builder !== service.builder ||
     (dockerfile.trim() || null) !== (service.dockerfile_path ?? null) ||
-    (rootDir.trim() || null) !== (service.root_dir ?? null);
+    (rootDir.trim() || null) !== (service.root_dir ?? null) ||
+    githubRepoKey !==
+      (service.github_installation_id && service.github_repository_id
+        ? `${service.github_installation_id}:${service.github_repository_id}`
+        : '');
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -574,6 +598,14 @@ function GitSourceSection({
       git_branch: branch.trim() || 'main',
       builder,
     };
+    if (selectedGithubRepo) {
+      patch.git_repo = selectedGithubRepo.clone_url;
+      patch.github_installation_id = selectedGithubRepo.installation_id;
+      patch.github_repository_id = selectedGithubRepo.repository_id;
+      patch.github_repository_full_name = selectedGithubRepo.full_name;
+      patch.github_auto_deploy = true;
+      patch.github_statuses_enabled = true;
+    }
     if (builder === 'dockerfile') {
       patch.dockerfile_path = dockerfile.trim();
     }
@@ -598,17 +630,51 @@ function GitSourceSection({
               setBuilder(service.builder);
               setDockerfile(service.dockerfile_path ?? '');
               setRootDir(service.root_dir ?? '');
+              setGithubRepoKey(
+                service.github_installation_id && service.github_repository_id
+                  ? `${service.github_installation_id}:${service.github_repository_id}`
+                  : '',
+              );
             }}
             canManage={canManage}
           />
         }
       >
+        {settings.data?.github_app_configured ? (
+          <Field
+            label="GitHub App repository"
+            htmlFor="svc-github-app-repo"
+            hint="Pushes to the selected branch auto-deploy when enabled for this service."
+          >
+            <Select
+              id="svc-github-app-repo"
+              value={githubRepoKey}
+              disabled={!canManage}
+              onChange={(e) => {
+                const key = e.target.value;
+                setGithubRepoKey(key);
+                const selected = githubRepos.find((r) => githubRepoValue(r) === key);
+                if (selected) {
+                  setRepo(selected.clone_url);
+                  setBranch(selected.default_branch || 'main');
+                }
+              }}
+            >
+              <option value="">— manual URL / PAT fallback —</option>
+              {githubRepos.map((githubRepo) => (
+                <option key={githubRepoValue(githubRepo)} value={githubRepoValue(githubRepo)}>
+                  {githubRepo.full_name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        ) : null}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Repository" htmlFor="svc-repo">
             <Input
               id="svc-repo"
               value={repo}
-              disabled={!canManage}
+              disabled={!canManage || !!githubRepoKey}
               placeholder="https://github.com/you/app"
               onChange={(e) => setRepo(e.target.value)}
             />
@@ -765,6 +831,10 @@ function ResourcesSection({
       </SectionCard>
     </form>
   );
+}
+
+function githubRepoValue(repo: GitHubRepositorySummary): string {
+  return `${repo.installation_id}:${repo.repository_id}`;
 }
 
 /* ---------- runtime ---------- */

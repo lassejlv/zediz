@@ -17,6 +17,10 @@ pub struct BuildSummary {
     pub git_commit: Option<String>,
     pub image_digest: Option<String>,
     pub image_tag: Option<String>,
+    pub trigger_kind: String,
+    pub git_ref: Option<String>,
+    pub git_sha: Option<String>,
+    pub github_delivery_id: Option<String>,
     pub reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
@@ -34,6 +38,10 @@ pub struct BuildRow {
     pub git_commit: Option<String>,
     pub image_digest: Option<String>,
     pub image_tag: Option<String>,
+    pub trigger_kind: String,
+    pub git_ref: Option<String>,
+    pub git_sha: Option<String>,
+    pub github_delivery_id: Option<String>,
     pub reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
@@ -67,6 +75,10 @@ impl TryFrom<BuildRow> for BuildSummary {
             git_commit: r.git_commit,
             image_digest: r.image_digest,
             image_tag: r.image_tag,
+            trigger_kind: r.trigger_kind,
+            git_ref: r.git_ref,
+            git_sha: r.git_sha,
+            github_delivery_id: r.github_delivery_id,
             reason: r.reason,
             created_at: r.created_at,
             started_at: r.started_at,
@@ -82,14 +94,36 @@ pub async fn create_queued(
     service_id: &str,
     deployment_id: &str,
 ) -> ApiResult<Id> {
+    create_queued_with_trigger(pool, service_id, deployment_id, None).await
+}
+
+pub struct BuildTrigger<'a> {
+    pub trigger_kind: &'a str,
+    pub git_ref: Option<&'a str>,
+    pub git_sha: Option<&'a str>,
+    pub github_delivery_id: Option<&'a str>,
+}
+
+pub async fn create_queued_with_trigger(
+    pool: &DatabaseConnection,
+    service_id: &str,
+    deployment_id: &str,
+    trigger: Option<BuildTrigger<'_>>,
+) -> ApiResult<Id> {
     let id = Id::new();
+    let trigger_kind = trigger.as_ref().map(|t| t.trigger_kind).unwrap_or("manual");
     crate::db::query(
-        "INSERT INTO builds (id, service_id, deployment_id, status) \
-         VALUES ($1, $2, $3, 'queued')",
+        "INSERT INTO builds (id, service_id, deployment_id, status, trigger_kind, \
+                             git_ref, git_sha, github_delivery_id) \
+         VALUES ($1, $2, $3, 'queued', $4, $5, $6, $7)",
     )
     .bind(id.to_string())
     .bind(service_id)
     .bind(deployment_id)
+    .bind(trigger_kind)
+    .bind(trigger.as_ref().and_then(|t| t.git_ref))
+    .bind(trigger.as_ref().and_then(|t| t.git_sha))
+    .bind(trigger.as_ref().and_then(|t| t.github_delivery_id))
     .execute(pool)
     .await?;
     Ok(id)
@@ -101,7 +135,8 @@ pub async fn list_for_service(
 ) -> ApiResult<Vec<BuildSummary>> {
     let rows: Vec<BuildRow> = crate::db::query_as(
         "SELECT id, service_id, deployment_id, node_id, status, git_commit, image_digest, \
-                image_tag, reason, created_at, started_at, finished_at, updated_at \
+                image_tag, trigger_kind, git_ref, git_sha, github_delivery_id, \
+                reason, created_at, started_at, finished_at, updated_at \
          FROM builds WHERE service_id = $1 ORDER BY created_at DESC LIMIT 50",
     )
     .bind(service_id)
@@ -115,7 +150,8 @@ pub async fn list_for_service(
 pub async fn fetch_by_id(pool: &DatabaseConnection, build_id: &str) -> ApiResult<BuildRow> {
     let row: Option<BuildRow> = crate::db::query_as(
         "SELECT id, service_id, deployment_id, node_id, status, git_commit, image_digest, \
-                image_tag, reason, created_at, started_at, finished_at, updated_at \
+                image_tag, trigger_kind, git_ref, git_sha, github_delivery_id, \
+                reason, created_at, started_at, finished_at, updated_at \
          FROM builds WHERE id = $1",
     )
     .bind(build_id)

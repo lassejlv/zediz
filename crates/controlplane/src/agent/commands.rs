@@ -5,6 +5,7 @@ use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 
+use crate::config::Config;
 use crate::crypto::MasterKey;
 
 /// Kinds of commands enqueued for an agent to execute.
@@ -115,6 +116,7 @@ pub async fn enqueue_coalesced(
 /// Returns the up-to-`limit` pending commands for a node and marks them `dispatched`.
 pub async fn claim_for_node(
     pool: &DatabaseConnection,
+    config: &Config,
     master_key: &MasterKey,
     node_id: &str,
     limit: i64,
@@ -149,7 +151,7 @@ pub async fn claim_for_node(
             payload: r.payload,
             created_at: r.created_at,
         };
-        if let Err(e) = hydrate_command_payload(pool, master_key, &mut command).await {
+        if let Err(e) = hydrate_command_payload(pool, config, master_key, &mut command).await {
             let result = format!("could not prepare command payload: {e:#}");
             tracing::warn!(
                 command = %command.id,
@@ -278,6 +280,8 @@ pub struct BuildPayload<'a> {
     pub root_dir: &'a str,
     pub image_tag: &'a str,
     pub github_credential_id: Option<&'a str>,
+    pub github_installation_id: Option<i64>,
+    pub github_repository_id: Option<i64>,
     pub registry: Option<RegistryAuth<'a>>,
 }
 
@@ -303,12 +307,15 @@ pub fn build_payload(p: &BuildPayload<'_>) -> JsonValue {
         "root_dir": p.root_dir,
         "image_tag": p.image_tag,
         "github_credential_id": p.github_credential_id,
+        "github_installation_id": p.github_installation_id,
+        "github_repository_id": p.github_repository_id,
         "registry": registry,
     })
 }
 
 async fn hydrate_command_payload(
     pool: &DatabaseConnection,
+    config: &Config,
     master_key: &MasterKey,
     command: &mut AgentCommand,
 ) -> Result<()> {
@@ -322,7 +329,20 @@ async fn hydrate_command_payload(
     } else {
         None
     };
-    if registry_credential_id.is_none() && github_credential_id.is_none() {
+    let github_installation_id = if command.kind == "build" {
+        i64_field(&command.payload, "github_installation_id")
+    } else {
+        None
+    };
+    let github_repository_id = if command.kind == "build" {
+        i64_field(&command.payload, "github_repository_id")
+    } else {
+        None
+    };
+    if registry_credential_id.is_none()
+        && github_credential_id.is_none()
+        && github_installation_id.is_none()
+    {
         return Ok(());
     }
 
@@ -362,6 +382,19 @@ async fn hydrate_command_payload(
         inject_github_pat(&mut command.payload, &credential.secret)?;
     }
 
+    if let (Some(installation_id), Some(repository_id)) =
+        (github_installation_id, github_repository_id)
+    {
+        let token =
+            crate::github_app::clone_token_for_repository(config, installation_id, repository_id)
+                .await?;
+        inject_github_pat(&mut command.payload, &token)?;
+    } else if github_installation_id.is_some() || github_repository_id.is_some() {
+        return Err(anyhow!(
+            "build payload must include both github_installation_id and github_repository_id"
+        ));
+    }
+
     Ok(())
 }
 
@@ -396,6 +429,10 @@ fn string_field(payload: &JsonValue, key: &str) -> Option<String> {
         .get(key)
         .and_then(|v| v.as_str())
         .map(str::to_string)
+}
+
+fn i64_field(payload: &JsonValue, key: &str) -> Option<i64> {
+    payload.get(key).and_then(|v| v.as_i64())
 }
 
 fn inject_registry_password(payload: &mut JsonValue, password: &str) -> Result<()> {
@@ -459,6 +496,8 @@ mod tests {
             root_dir: ".",
             image_tag: "registry/ws/svc:build",
             github_credential_id: Some("github_cred"),
+            github_installation_id: Some(123),
+            github_repository_id: Some(456),
             registry: Some(RegistryAuth {
                 url: "registry",
                 username: "robot",
@@ -467,6 +506,8 @@ mod tests {
         });
 
         assert_eq!(payload["github_credential_id"], "github_cred");
+        assert_eq!(payload["github_installation_id"], 123);
+        assert_eq!(payload["github_repository_id"], 456);
         assert_eq!(payload["registry"]["credential_id"], "registry_cred");
         assert!(payload.get("github_pat").is_none());
         assert!(payload["registry"].get("password").is_none());

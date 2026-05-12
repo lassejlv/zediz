@@ -526,8 +526,14 @@ async fn heartbeat(
         .await?;
     }
 
-    let pending =
-        commands::claim_for_node(state.pool(), state.master_key(), &claims.node_id, 16).await?;
+    let pending = commands::claim_for_node(
+        state.pool(),
+        state.config(),
+        state.master_key(),
+        &claims.node_id,
+        16,
+    )
+    .await?;
     Ok(Json(HeartbeatResponse { commands: pending }))
 }
 
@@ -851,6 +857,7 @@ async fn build_status(
     }
 
     let terminal = matches!(update.status.as_str(), "succeeded" | "failed");
+    let status_for_github = update.status.clone();
     let updated = crate::db::query(
         "UPDATE builds SET \
             status = $1, \
@@ -873,6 +880,23 @@ async fn build_status(
     .await?;
     if updated.rows_affected() == 0 {
         return Ok(());
+    }
+
+    if matches!(
+        status_for_github.as_str(),
+        "cloning" | "building" | "pushing"
+    ) {
+        if let Err(e) = crate::github_app::post_commit_status_for_build(
+            state.pool(),
+            state.config(),
+            &build_id,
+            "pending",
+            "Driftbase build running",
+        )
+        .await
+        {
+            tracing::warn!(error = ?e, build = %build_id, "posting GitHub build status failed");
+        }
     }
 
     let Some(deployment_id) = build.deployment_id.clone() else {
@@ -918,6 +942,17 @@ async fn build_status(
                 .execute(state.pool())
                 .await?;
             crate::scheduler::nudge(&state);
+            if let Err(e) = crate::github_app::post_commit_status_for_build(
+                state.pool(),
+                state.config(),
+                &build_id,
+                "success",
+                "Driftbase build succeeded",
+            )
+            .await
+            {
+                tracing::warn!(error = ?e, build = %build_id, "posting GitHub success status failed");
+            }
         }
         "failed" => {
             let reason = update.reason.unwrap_or_else(|| "build failed".to_string());
@@ -934,6 +969,17 @@ async fn build_status(
                 .bind(&deployment_id)
                 .execute(state.pool())
                 .await?;
+            if let Err(e) = crate::github_app::post_commit_status_for_build(
+                state.pool(),
+                state.config(),
+                &build_id,
+                "failure",
+                &reason,
+            )
+            .await
+            {
+                tracing::warn!(error = ?e, build = %build_id, "posting GitHub failure status failed");
+            }
         }
         _ => {}
     }

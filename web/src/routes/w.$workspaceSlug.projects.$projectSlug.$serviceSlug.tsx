@@ -966,6 +966,7 @@ function BuildsTab({
         <thead className="text-left text-[10px] uppercase tracking-wider text-[var(--color-muted)]">
           <tr>
             <th className="px-4 py-2.5 font-medium">Status</th>
+            <th className="px-4 py-2.5 font-medium">Trigger</th>
             <th className="px-4 py-2.5 font-medium">Commit</th>
             <th className="px-4 py-2.5 font-medium">Image</th>
             <th className="px-4 py-2.5 font-medium">Started</th>
@@ -1011,8 +1012,22 @@ function BuildRow({
       <td className="px-4 py-2">
         <StatusPill status={tone.tone} label={b.status} pulse={tone.pulse} />
       </td>
+      <td className="px-4 py-2 text-xs text-[var(--color-muted)]">
+        {b.trigger_kind === 'github_push' ? (
+          <div>
+            <span className="text-[var(--color-fg)]">GitHub push</span>
+            {b.git_ref ? (
+              <div className="mt-0.5 font-mono text-[11px]">
+                {b.git_ref.replace('refs/heads/', '')}
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          'Manual'
+        )}
+      </td>
       <td className="px-4 py-2 font-mono text-xs">
-        {b.git_commit ? b.git_commit.slice(0, 7) : '—'}
+        {b.git_commit || b.git_sha ? (b.git_commit ?? b.git_sha)!.slice(0, 7) : '—'}
       </td>
       <td className="px-4 py-2">
         {b.image_digest ? (

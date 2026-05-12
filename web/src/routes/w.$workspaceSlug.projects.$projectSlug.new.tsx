@@ -10,6 +10,8 @@ import {
   type CreateServiceInput,
 } from '@/lib/services';
 import { useCredentials } from '@/lib/credentials';
+import { githubRepositoriesQuery, type GitHubRepositorySummary } from '@/lib/github';
+import { usePublicSettings } from '@/lib/settings';
 import { canWrite, workspaceQuery } from '@/lib/workspaces';
 import { ApiError } from '@/lib/api';
 import { EnvReferenceInput } from '@/components/env-reference-input';
@@ -55,6 +57,11 @@ function NewServicePage() {
   const workspace = useQuery(workspaceQuery(workspaceSlug));
   const project = useQuery(projectQuery(workspaceSlug, projectSlug));
   const credentials = useCredentials(workspaceSlug);
+  const settings = usePublicSettings();
+  const githubRepositories = useQuery({
+    ...githubRepositoriesQuery(workspaceSlug),
+    enabled: !!settings.data?.github_app_configured,
+  });
   const variableReferences = useVariableReferences(workspaceSlug, projectSlug);
   const create = useCreateService(workspaceSlug, projectSlug);
   const navigate = useNavigate();
@@ -75,6 +82,7 @@ function NewServicePage() {
   const [rootDir, setRootDir] = useState('.');
   const [registryRepo, setRegistryRepo] = useState('');
   const [githubCredId, setGithubCredId] = useState('');
+  const [githubRepoKey, setGithubRepoKey] = useState('');
   const [registryCredId, setRegistryCredId] = useState('');
 
   const [ports, setPorts] = useState<PortRow[]>([]);
@@ -95,6 +103,7 @@ function NewServicePage() {
     () => (credentials.data ?? []).filter((c) => c.kind === 'github_pat'),
     [credentials.data],
   );
+  const githubRepos = githubRepositories.data ?? [];
 
   function onNameChange(next: string) {
     setName(next);
@@ -126,9 +135,14 @@ function NewServicePage() {
         if (!image.trim()) throw new Error('Image reference is required');
         base.image_ref = image.trim();
       } else {
-        if (!gitRepo.trim()) throw new Error('Git repo URL is required');
+        const selectedGithubRepo = githubRepos.find(
+          (repo) => githubRepoKey === githubRepoValue(repo),
+        );
+        if (!selectedGithubRepo && !gitRepo.trim()) {
+          throw new Error('Git repo URL or GitHub App repository is required');
+        }
         if (!registryCredId) throw new Error('Pick a registry credential');
-        base.git_repo = gitRepo.trim();
+        base.git_repo = selectedGithubRepo?.clone_url ?? gitRepo.trim();
         base.git_branch = gitBranch.trim() || 'main';
         base.builder = builder;
         base.root_dir = rootDir.trim() || '.';
@@ -138,6 +152,13 @@ function NewServicePage() {
         if (registryRepo.trim()) base.registry_repo = registryRepo.trim();
         base.registry_credential_id = registryCredId;
         if (githubCredId) base.github_credential_id = githubCredId;
+        if (selectedGithubRepo) {
+          base.github_installation_id = selectedGithubRepo.installation_id;
+          base.github_repository_id = selectedGithubRepo.repository_id;
+          base.github_repository_full_name = selectedGithubRepo.full_name;
+          base.github_auto_deploy = true;
+          base.github_statuses_enabled = true;
+        }
       }
 
       const created = await create.mutateAsync(base);
@@ -240,6 +261,38 @@ function NewServicePage() {
         </Section>
       ) : (
         <Section title="Git source" description="Driftbase builds the image from this repo on deploy.">
+          {settings.data?.github_app_configured ? (
+            <Field
+              label="GitHub App repository"
+              htmlFor="svc-github-app-repo"
+              hint={
+                githubRepos.length
+                  ? 'Pushes to the selected branch will auto-deploy.'
+                  : 'Connect the GitHub App from Credentials to select repositories.'
+              }
+            >
+              <Select
+                id="svc-github-app-repo"
+                value={githubRepoKey}
+                onChange={(e) => {
+                  const key = e.target.value;
+                  setGithubRepoKey(key);
+                  const repo = githubRepos.find((r) => githubRepoValue(r) === key);
+                  if (repo) {
+                    setGitRepo(repo.clone_url);
+                    setGitBranch(repo.default_branch || 'main');
+                  }
+                }}
+              >
+                <option value="">— manual URL / PAT fallback —</option>
+                {githubRepos.map((repo) => (
+                  <option key={githubRepoValue(repo)} value={githubRepoValue(repo)}>
+                    {repo.full_name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          ) : null}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-[2fr_1fr]">
             <Field label="Repository URL" htmlFor="svc-git-repo">
               <Input
@@ -247,6 +300,7 @@ function NewServicePage() {
                 required
                 placeholder="https://github.com/org/repo"
                 value={gitRepo}
+                disabled={!!githubRepoKey}
                 onChange={(e) => setGitRepo(e.target.value)}
               />
             </Field>
@@ -326,7 +380,7 @@ function NewServicePage() {
             <Field
               label="GitHub PAT"
               htmlFor="svc-github-cred"
-              hint="For private repos. Leave blank for public."
+              hint="Legacy fallback for private repos not connected through the GitHub App."
             >
               <Select
                 id="svc-github-cred"
@@ -755,6 +809,10 @@ function slugify(s: string): string {
     .replace(/[^a-z0-9-]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 40);
+}
+
+function githubRepoValue(repo: GitHubRepositorySummary): string {
+  return `${repo.installation_id}:${repo.repository_id}`;
 }
 
 function parsePorts(rows: PortRow[]): PortMap[] {

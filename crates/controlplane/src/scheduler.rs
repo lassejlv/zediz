@@ -231,6 +231,8 @@ struct QueuedBuild {
     root_dir: String,
     registry_repo: Option<String>,
     github_credential_id: Option<String>,
+    github_installation_id: Option<i64>,
+    github_repository_id: Option<i64>,
     registry_credential_id: Option<String>,
 }
 
@@ -249,6 +251,8 @@ async fn fetch_queued_builds(pool: &DatabaseConnection) -> Result<Vec<QueuedBuil
         root_dir: Option<String>,
         registry_repo: Option<String>,
         github_credential_id: Option<String>,
+        github_installation_id: Option<i64>,
+        github_repository_id: Option<i64>,
         registry_credential_id: Option<String>,
     }
 
@@ -257,6 +261,7 @@ async fn fetch_queued_builds(pool: &DatabaseConnection) -> Result<Vec<QueuedBuil
                 p.hetzner_location AS project_location, \
                 s.git_repo, s.git_branch, s.builder, s.dockerfile_path, s.root_dir, \
                 s.registry_repo, s.github_credential_id, s.registry_credential_id \
+                , s.github_installation_id, s.github_repository_id \
          FROM builds b \
          JOIN services s ON s.id = b.service_id \
          JOIN projects p ON p.id = s.project_id \
@@ -289,6 +294,8 @@ async fn fetch_queued_builds(pool: &DatabaseConnection) -> Result<Vec<QueuedBuil
             root_dir: r.root_dir.unwrap_or_else(|| ".".into()),
             registry_repo: r.registry_repo,
             github_credential_id: r.github_credential_id,
+            github_installation_id: r.github_installation_id,
+            github_repository_id: r.github_repository_id,
             registry_credential_id: r.registry_credential_id,
         });
     }
@@ -412,6 +419,8 @@ async fn dispatch_build(state: &AppState, b: QueuedBuild) -> Result<()> {
         root_dir: &b.root_dir,
         image_tag: &image_tag,
         github_credential_id,
+        github_installation_id: b.github_installation_id,
+        github_repository_id: b.github_repository_id,
         registry: Some(RegistryAuth {
             url: &registry_meta.url,
             username: &registry_meta.username,

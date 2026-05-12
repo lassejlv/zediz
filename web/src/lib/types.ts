@@ -128,6 +128,11 @@ export interface ServiceSummary {
   registry_repo: string | null;
   github_credential_id: string | null;
   registry_credential_id: string | null;
+  github_installation_id: number | null;
+  github_repository_id: number | null;
+  github_repository_full_name: string | null;
+  github_auto_deploy: boolean;
+  github_statuses_enabled: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -161,6 +166,10 @@ export interface BuildSummary {
   git_commit: string | null;
   image_digest: string | null;
   image_tag: string | null;
+  trigger_kind: 'manual' | 'github_push';
+  git_ref: string | null;
+  git_sha: string | null;
+  github_delivery_id: string | null;
   reason: string | null;
   created_at: string;
   started_at: string | null;

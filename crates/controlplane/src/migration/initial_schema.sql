@@ -302,6 +302,11 @@ ALTER TABLE services ADD COLUMN build_context          TEXT;
 ALTER TABLE services ADD COLUMN registry_repo          TEXT;
 ALTER TABLE services ADD COLUMN github_credential_id   TEXT REFERENCES credentials(id) ON DELETE SET NULL;
 ALTER TABLE services ADD COLUMN registry_credential_id TEXT REFERENCES credentials(id) ON DELETE SET NULL;
+ALTER TABLE services ADD COLUMN github_installation_id BIGINT;
+ALTER TABLE services ADD COLUMN github_repository_id BIGINT;
+ALTER TABLE services ADD COLUMN github_repository_full_name TEXT;
+ALTER TABLE services ADD COLUMN github_auto_deploy BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE services ADD COLUMN github_statuses_enabled BOOLEAN NOT NULL DEFAULT TRUE;
 
 -- One row per build attempt. deployment_id is the deployment that triggered
 -- the build; the pushed image_tag ends up on that deployment so the normal
@@ -317,6 +322,11 @@ CREATE TABLE builds (
     git_commit    TEXT,
     image_digest  TEXT,
     image_tag     TEXT,
+    trigger_kind  TEXT NOT NULL DEFAULT 'manual'
+        CHECK (trigger_kind IN ('manual','github_push')),
+    git_ref       TEXT,
+    git_sha       TEXT,
+    github_delivery_id TEXT,
     reason        TEXT,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     started_at    TIMESTAMPTZ,
@@ -326,6 +336,64 @@ CREATE TABLE builds (
 CREATE INDEX builds_service_idx    ON builds(service_id);
 CREATE INDEX builds_deployment_idx ON builds(deployment_id);
 CREATE INDEX builds_status_idx     ON builds(status);
+CREATE INDEX builds_github_delivery_idx ON builds(github_delivery_id)
+    WHERE github_delivery_id IS NOT NULL;
+
+-- Workspace-level GitHub App installations and repo cache.
+CREATE TABLE github_installations (
+    id                    TEXT PRIMARY KEY,
+    workspace_id          TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    installation_id       BIGINT NOT NULL,
+    account_login         TEXT NOT NULL,
+    account_id            BIGINT NOT NULL,
+    account_type          TEXT NOT NULL,
+    repository_selection  TEXT NOT NULL,
+    permissions           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    events                JSONB NOT NULL DEFAULT '[]'::jsonb,
+    html_url              TEXT,
+    active                BOOLEAN NOT NULL DEFAULT TRUE,
+    suspended_at          TIMESTAMPTZ,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (workspace_id, installation_id)
+);
+CREATE INDEX github_installations_workspace_idx
+    ON github_installations(workspace_id);
+CREATE INDEX github_installations_installation_idx
+    ON github_installations(installation_id);
+
+CREATE TABLE github_repositories (
+    workspace_id          TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    installation_id       BIGINT NOT NULL,
+    repository_id         BIGINT NOT NULL,
+    full_name             TEXT NOT NULL,
+    private               BOOLEAN NOT NULL DEFAULT FALSE,
+    default_branch        TEXT NOT NULL DEFAULT 'main',
+    clone_url             TEXT NOT NULL,
+    html_url              TEXT NOT NULL,
+    archived              BOOLEAN NOT NULL DEFAULT FALSE,
+    disabled              BOOLEAN NOT NULL DEFAULT FALSE,
+    permissions           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    pushed_at             TIMESTAMPTZ,
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (workspace_id, installation_id, repository_id)
+);
+CREATE INDEX github_repositories_workspace_idx
+    ON github_repositories(workspace_id);
+CREATE INDEX github_repositories_installation_repo_idx
+    ON github_repositories(installation_id, repository_id);
+
+CREATE TABLE github_webhook_deliveries (
+    delivery_id           TEXT PRIMARY KEY,
+    event                 TEXT NOT NULL,
+    installation_id       BIGINT,
+    status                TEXT NOT NULL CHECK (status IN ('processing','processed','ignored','failed')),
+    error                 TEXT,
+    received_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    processed_at          TIMESTAMPTZ
+);
+CREATE INDEX github_webhook_deliveries_installation_idx
+    ON github_webhook_deliveries(installation_id);
 
 -- Allow the new 'build' command kind.
 ALTER TABLE agent_commands DROP CONSTRAINT agent_commands_kind_check;
