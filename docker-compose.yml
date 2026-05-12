@@ -53,12 +53,27 @@ services:
   # from the `driftbase` docker network. The control plane's registry_proxy module
   # terminates auth (basic auth against the credentials table, with per-workspace
   # path scoping) and then forwards the request here.
+  #
+  # Storage backend: filesystem by default. Set REGISTRY_STORAGE_S3_BUCKET in
+  # `.env` to switch to an S3-compatible bucket (AWS S3, Hetzner Object Storage,
+  # Cloudflare R2, MinIO, Backblaze B2). See `.env.example` for the full env
+  # contract. The host-side `data/registry` mount is kept even in S3 mode so
+  # operators can flip back without losing the host directory.
   registry:
     image: registry:2
     restart: unless-stopped
+    entrypoint: ["/bin/sh", "/driftbase-registry-entrypoint.sh"]
     environment:
-      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      REGISTRY_STORAGE_S3_BUCKET: ${REGISTRY_STORAGE_S3_BUCKET:-}
+      REGISTRY_STORAGE_S3_REGION: ${REGISTRY_STORAGE_S3_REGION:-}
+      REGISTRY_STORAGE_S3_REGIONENDPOINT: ${REGISTRY_STORAGE_S3_REGIONENDPOINT:-}
+      REGISTRY_STORAGE_S3_ACCESSKEY: ${REGISTRY_STORAGE_S3_ACCESSKEY:-}
+      REGISTRY_STORAGE_S3_SECRETKEY: ${REGISTRY_STORAGE_S3_SECRETKEY:-}
+      REGISTRY_STORAGE_S3_FORCEPATHSTYLE: ${REGISTRY_STORAGE_S3_FORCEPATHSTYLE:-true}
+      REGISTRY_STORAGE_S3_SECURE: ${REGISTRY_STORAGE_S3_SECURE:-true}
+      REGISTRY_STORAGE_S3_ROOTDIRECTORY: ${REGISTRY_STORAGE_S3_ROOTDIRECTORY:-}
     volumes:
+      - ./registry/entrypoint.sh:/driftbase-registry-entrypoint.sh:ro
       - ${REGISTRY_STORAGE_PATH:-./data/registry}:/var/lib/registry
     networks:
       - driftbase

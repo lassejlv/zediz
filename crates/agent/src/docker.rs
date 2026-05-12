@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use bollard::auth::DockerCredentials;
 use bollard::container::{
-    Config, CreateContainerOptions, LogOutput, LogsOptions, NetworkingConfig,
-    RemoveContainerOptions, StatsOptions, StopContainerOptions,
+    Config, CreateContainerOptions, ListContainersOptions, LogOutput, LogsOptions,
+    NetworkingConfig, RemoveContainerOptions, StatsOptions, StopContainerOptions,
 };
 use bollard::image::CreateImageOptions;
 use bollard::models::{
@@ -225,6 +225,9 @@ impl DockerExec {
                 )
                 .await;
         }
+        if let Some(private) = spec.private_network.as_ref() {
+            self.remove_private_ip_conflicts(&name, private).await?;
+        }
 
         let created = self
             .docker
@@ -237,11 +240,89 @@ impl DockerExec {
             )
             .await?;
 
-        self.docker
+        if let Err(e) = self
+            .docker
             .start_container::<String>(&created.id, None)
-            .await?;
+            .await
+        {
+            let _ = self.remove_container_id(&created.id).await;
+            return Err(e).with_context(|| format!("starting {name}"));
+        }
 
         Ok(created.id)
+    }
+
+    async fn remove_private_ip_conflicts(
+        &self,
+        current_name: &str,
+        private: &PrivateNetworkSpec,
+    ) -> Result<()> {
+        let mut filters = HashMap::new();
+        filters.insert(
+            "label".to_string(),
+            vec!["driftbase.managed=true".to_string()],
+        );
+        filters.insert("network".to_string(), vec![private.network_name.clone()]);
+        let containers = self
+            .docker
+            .list_containers(Some(ListContainersOptions {
+                all: true,
+                limit: None,
+                size: false,
+                filters,
+            }))
+            .await
+            .context("listing driftbase containers for private IP cleanup")?;
+
+        for container in containers {
+            let names = container.names.unwrap_or_default();
+            if names
+                .iter()
+                .any(|n| n.trim_start_matches('/') == current_name)
+            {
+                continue;
+            }
+            let has_ip = container
+                .network_settings
+                .and_then(|settings| settings.networks)
+                .and_then(|mut networks| networks.remove(&private.network_name))
+                .and_then(|endpoint| endpoint.ip_address)
+                .as_deref()
+                == Some(private.ip_address.as_str());
+            if !has_ip {
+                continue;
+            }
+            if let Some(id) = container.id {
+                tracing::warn!(
+                    container = %id,
+                    network = %private.network_name,
+                    ip = %private.ip_address,
+                    "removing stale driftbase container holding private IP",
+                );
+                self.remove_container_id(&id).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn remove_container_id(&self, id: &str) -> Result<()> {
+        let res = self
+            .docker
+            .remove_container(
+                id,
+                Some(RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                }),
+            )
+            .await;
+        match res {
+            Ok(()) => Ok(()),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// One-shot stats snapshot for a deployment's container. Uses bollard's

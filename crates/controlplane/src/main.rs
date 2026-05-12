@@ -38,7 +38,9 @@ mod workspaces;
 use axum::extract::State;
 
 use crate::config::Config;
+use crate::error::ApiError;
 use crate::state::AppState;
+use tower_http::services::{ServeDir, ServeFile};
 
 #[derive(Serialize)]
 struct Health {
@@ -136,7 +138,8 @@ fn router(state: AppState) -> Router {
         .merge(domains::routes::router())
         .merge(volumes::routes::router())
         .merge(agent::routes::router())
-        .merge(console::routes::router());
+        .merge(console::routes::router())
+        .fallback(|| async { ApiError::NotFound });
 
     // The registry proxy is mounted at the root (not under /api/v1) because
     // docker clients hit `<registry-host>/v2/...` verbatim and we can't
@@ -145,6 +148,7 @@ fn router(state: AppState) -> Router {
     Router::new()
         .nest("/api/v1", api)
         .merge(registry_proxy::router())
+        .fallback_service(spa_service())
         .layer(TraceLayer::new_for_http())
         .layer(
             CorsLayer::new()
@@ -153,4 +157,10 @@ fn router(state: AppState) -> Router {
                 .allow_origin(Any),
         )
         .with_state(state)
+}
+
+fn spa_service() -> ServeDir<ServeFile> {
+    let static_dir = std::env::var("DRIFTBASE_STATIC_DIR").unwrap_or_else(|_| "web/dist".into());
+    let index = std::path::Path::new(&static_dir).join("index.html");
+    ServeDir::new(static_dir).fallback(ServeFile::new(index))
 }

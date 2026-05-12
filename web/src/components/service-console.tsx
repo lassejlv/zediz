@@ -8,6 +8,7 @@ type ConnState = 'connecting' | 'open' | 'closed' | 'error';
 
 export function ServiceConsole({ deploymentId }: { deploymentId: string }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const connectionSeq = useRef(0);
   const [connState, setConnState] = useState<ConnState>('connecting');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [reconnectKey, setReconnectKey] = useState(0);
@@ -15,6 +16,10 @@ export function ServiceConsole({ deploymentId }: { deploymentId: string }) {
   useEffect(() => {
     const host = containerRef.current;
     if (!host) return;
+    const seq = ++connectionSeq.current;
+    let disposed = false;
+    let latestError: string | null = null;
+    const isCurrent = () => !disposed && connectionSeq.current === seq;
 
     setErrorMsg(null);
     setConnState('connecting');
@@ -63,16 +68,19 @@ export function ServiceConsole({ deploymentId }: { deploymentId: string }) {
     const dataSub = term.onData(onData);
 
     ws.onopen = () => {
+      if (!isCurrent()) return;
       setConnState('open');
       term.focus();
     };
     ws.onmessage = (e) => {
+      if (!isCurrent()) return;
       if (e.data instanceof ArrayBuffer) {
         term.write(new Uint8Array(e.data));
       } else if (typeof e.data === 'string') {
         try {
           const v = JSON.parse(e.data);
           if (v && v.type === 'error' && typeof v.message === 'string') {
+            latestError = v.message;
             setErrorMsg(v.message);
           }
         } catch {
@@ -80,10 +88,14 @@ export function ServiceConsole({ deploymentId }: { deploymentId: string }) {
         }
       }
     };
-    ws.onerror = () => setConnState('error');
+    ws.onerror = () => {
+      if (!isCurrent()) return;
+      setConnState('error');
+    };
     ws.onclose = (ev) => {
+      if (!isCurrent()) return;
       setConnState('closed');
-      if (!errorMsg && ev.reason) setErrorMsg(ev.reason);
+      if (!latestError && ev.reason) setErrorMsg(ev.reason);
     };
 
     let resizeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -106,6 +118,7 @@ export function ServiceConsole({ deploymentId }: { deploymentId: string }) {
     ro.observe(host);
 
     return () => {
+      disposed = true;
       ro.disconnect();
       if (resizeTimer) clearTimeout(resizeTimer);
       dataSub.dispose();

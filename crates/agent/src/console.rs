@@ -35,56 +35,18 @@ pub async fn run_session(
     let (ws_stream, _resp) = tokio_tungstenite::connect_async(request)
         .await
         .with_context(|| format!("dialing console ws {ws_url}"))?;
-
-    let exec = docker
-        .create_exec(
-            &container_name,
-            CreateExecOptions {
-                attach_stdin: Some(true),
-                attach_stdout: Some(true),
-                attach_stderr: Some(true),
-                tty: Some(true),
-                cmd: Some(vec![
-                    "/bin/sh".to_string(),
-                    "-c".to_string(),
-                    "command -v bash >/dev/null && exec bash || exec sh".to_string(),
-                ]),
-                env: Some(vec!["TERM=xterm-256color".to_string()]),
-                ..Default::default()
-            },
-        )
-        .await
-        .with_context(|| format!("create_exec on {container_name}"))?;
-
-    let started = docker
-        .start_exec(
-            &exec.id,
-            Some(StartExecOptions {
-                detach: false,
-                tty: true,
-                output_capacity: None,
-            }),
-        )
-        .await
-        .context("start_exec")?;
-
-    let (mut output, mut input) = match started {
-        StartExecResults::Attached { output, input } => (output, input),
-        StartExecResults::Detached => bail!("docker returned detached exec, expected attached"),
-    };
-
-    let _ = docker
-        .resize_exec(
-            &exec.id,
-            ResizeExecOptions {
-                width: cols,
-                height: rows,
-            },
-        )
-        .await;
-
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
-    let exec_id_for_resize = exec.id.clone();
+
+    let (mut output, mut input, exec_id) =
+        match start_shell_exec(&docker, &container_name, cols, rows).await {
+            Ok(session) => session,
+            Err(e) => {
+                let _ = send_error_and_close(&mut ws_tx, &e.to_string()).await;
+                return Err(e);
+            }
+        };
+
+    let exec_id_for_resize = exec_id.clone();
     let docker_for_resize = docker.clone();
 
     // stdin task: WebSocket -> docker stdin (and handle resize control frames).
@@ -157,6 +119,79 @@ pub async fn run_session(
         _ = stdin => {},
         _ = stdout => {},
     }
+    Ok(())
+}
+
+async fn start_shell_exec(
+    docker: &Docker,
+    container_name: &str,
+    cols: u16,
+    rows: u16,
+) -> Result<(
+    impl StreamExt<Item = std::result::Result<bollard::container::LogOutput, bollard::errors::Error>>,
+    impl tokio::io::AsyncWrite + Unpin,
+    String,
+)> {
+    let exec = docker
+        .create_exec(
+            container_name,
+            CreateExecOptions {
+                attach_stdin: Some(true),
+                attach_stdout: Some(true),
+                attach_stderr: Some(true),
+                tty: Some(true),
+                cmd: Some(vec![
+                    "/bin/sh".to_string(),
+                    "-c".to_string(),
+                    "command -v bash >/dev/null && exec bash || exec sh".to_string(),
+                ]),
+                env: Some(vec!["TERM=xterm-256color".to_string()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .with_context(|| format!("create_exec on {container_name}"))?;
+
+    let started = docker
+        .start_exec(
+            &exec.id,
+            Some(StartExecOptions {
+                detach: false,
+                tty: true,
+                output_capacity: None,
+            }),
+        )
+        .await
+        .context("start_exec")?;
+
+    let (output, input) = match started {
+        StartExecResults::Attached { output, input } => (output, input),
+        StartExecResults::Detached => bail!("docker returned detached exec, expected attached"),
+    };
+
+    let _ = docker
+        .resize_exec(
+            &exec.id,
+            ResizeExecOptions {
+                width: cols,
+                height: rows,
+            },
+        )
+        .await;
+
+    Ok((output, input, exec.id))
+}
+
+async fn send_error_and_close<S>(ws_tx: &mut S, message: &str) -> Result<()>
+where
+    S: futures::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    let payload = serde_json::json!({
+        "type": "error",
+        "message": message,
+    });
+    let _ = ws_tx.send(Message::Text(payload.to_string())).await;
+    let _ = ws_tx.close().await;
     Ok(())
 }
 
