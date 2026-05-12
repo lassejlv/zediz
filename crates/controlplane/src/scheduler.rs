@@ -1206,6 +1206,12 @@ async fn try_provision_for(
     let ssh_key_ids = ssh_keys::ensure_on_hetzner(state.pool(), workspace_id, &token).await?;
 
     let location = location_override.unwrap_or(ws.hetzner_location.as_str());
+    let node_size = if let Some(server_type) = state.config().default_hetzner_server_type.as_deref()
+    {
+        hetzner_provisioner::NodeSize::Preferred { server_type, need }
+    } else {
+        hetzner_provisioner::NodeSize::Fit(need)
+    };
     let result = hetzner_provisioner::provision(
         state.pool(),
         state.config(),
@@ -1213,7 +1219,7 @@ async fn try_provision_for(
         &token,
         workspace_id,
         location,
-        hetzner_provisioner::NodeSize::Fit(need),
+        node_size,
         ssh_key_ids,
     )
     .await?;

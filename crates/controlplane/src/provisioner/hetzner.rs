@@ -25,6 +25,12 @@ pub struct ProvisionResult {
 pub enum NodeSize<'a> {
     /// Pick the cheapest server type that fits `need` + HEADROOM.
     Fit(&'a Resources),
+    /// Prefer a named server type when it fits `need` + HEADROOM; otherwise
+    /// pick the cheapest larger type that fits.
+    Preferred {
+        server_type: &'a str,
+        need: &'a Resources,
+    },
     /// Use a named server type verbatim (e.g. "cx22").
     Explicit(&'a str),
 }
@@ -49,22 +55,21 @@ pub async fn provision(
         .context("listing Hetzner server types")?;
 
     let st: ServerType = match size {
-        NodeSize::Fit(need) => {
-            let cpu_need = (need.cpu_millis as f32 * HEADROOM) as u32;
-            let mem_need = (need.memory_mb as f32 * HEADROOM) as u32;
-            let disk_need = (need.disk_mb as f32 * HEADROOM) as u32;
-            let picked = pick_server_type(&types, location, cpu_need, mem_need, disk_need)
-                .ok_or_else(|| {
-                    anyhow!("no Hetzner server type fits requested resources in {location}")
-                })?;
-            ServerType {
-                id: picked.id,
-                name: picked.name.clone(),
-                description: picked.description.clone(),
-                cores: picked.cores,
-                memory: picked.memory,
-                disk: picked.disk,
-                prices: Vec::new(),
+        NodeSize::Fit(need) => pick_fit(&types, location, need)?,
+        NodeSize::Preferred { server_type, need } => {
+            let found = types
+                .iter()
+                .find(|t| t.name.eq_ignore_ascii_case(server_type))
+                .ok_or_else(|| anyhow!("unknown Hetzner server type: {server_type}"))?;
+            if !found.prices.iter().any(|p| p.location == location) {
+                return Err(anyhow!(
+                    "server type {server_type} is not available in {location}"
+                ));
+            }
+            if server_type_fits(found, need) {
+                clone_server_type(found)
+            } else {
+                pick_fit(&types, location, need)?
             }
         }
         NodeSize::Explicit(name) => {
@@ -75,15 +80,7 @@ pub async fn provision(
             if !found.prices.iter().any(|p| p.location == location) {
                 return Err(anyhow!("server type {name} is not available in {location}"));
             }
-            ServerType {
-                id: found.id,
-                name: found.name.clone(),
-                description: found.description.clone(),
-                cores: found.cores,
-                memory: found.memory,
-                disk: found.disk,
-                prices: Vec::new(),
-            }
+            clone_server_type(found)
         }
     };
 
@@ -179,6 +176,36 @@ pub async fn provision(
         node_id,
         hetzner_server_id: created.server.id,
     })
+}
+
+fn pick_fit(types: &[ServerType], location: &str, need: &Resources) -> Result<ServerType> {
+    let cpu_need = (need.cpu_millis as f32 * HEADROOM) as u32;
+    let mem_need = (need.memory_mb as f32 * HEADROOM) as u32;
+    let disk_need = (need.disk_mb as f32 * HEADROOM) as u32;
+    let picked = pick_server_type(types, location, cpu_need, mem_need, disk_need)
+        .ok_or_else(|| anyhow!("no Hetzner server type fits requested resources in {location}"))?;
+    Ok(clone_server_type(picked))
+}
+
+fn server_type_fits(server_type: &ServerType, need: &Resources) -> bool {
+    let cpu_need = (need.cpu_millis as f32 * HEADROOM) as u32;
+    let mem_need = need.memory_mb as f32 * HEADROOM / 1024.0;
+    let disk_need = need.disk_mb as f32 * HEADROOM / 1024.0;
+    server_type.cores >= cpu_need
+        && server_type.memory >= mem_need
+        && server_type.disk as f32 >= disk_need
+}
+
+fn clone_server_type(server_type: &ServerType) -> ServerType {
+    ServerType {
+        id: server_type.id,
+        name: server_type.name.clone(),
+        description: server_type.description.clone(),
+        cores: server_type.cores,
+        memory: server_type.memory,
+        disk: server_type.disk,
+        prices: Vec::new(),
+    }
 }
 
 /// Tear down a Hetzner node. Marks it terminated first (so the scheduler stops

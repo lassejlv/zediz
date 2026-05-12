@@ -26,6 +26,9 @@ pub struct Config {
     /// Desired node-agent image. The node update checker resolves this ref to
     /// a registry digest and compares nodes against it.
     pub agent_image: String,
+    /// Preferred Hetzner server type for autoscaled nodes. If the requested
+    /// service resources do not fit, provisioning falls back to cheapest-fit.
+    pub default_hetzner_server_type: Option<String>,
     /// Optional one-time installer secret required for the first platform-admin
     /// signup. If unset, first-signup bootstrap keeps its historical behavior.
     pub setup_token: Option<String>,
@@ -72,6 +75,7 @@ impl Config {
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| DEFAULT_AGENT_IMAGE.to_string());
+        let default_hetzner_server_type = optional_env(&["DRIFTBASE_DEFAULT_HETZNER_SERVER_TYPE"]);
         let setup_token = optional_env(&["DRIFTBASE_SETUP_TOKEN"]);
         let managed_hetzner_api_token = optional_env(&["DRIFTBASE_MANAGED_HETZNER_API_TOKEN"]);
 
@@ -85,6 +89,7 @@ impl Config {
                 registry_site,
                 registry_upstream,
                 agent_image,
+                default_hetzner_server_type,
                 setup_token,
                 managed_hetzner_api_token,
             },
