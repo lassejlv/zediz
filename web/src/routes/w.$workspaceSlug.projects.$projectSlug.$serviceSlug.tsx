@@ -972,15 +972,136 @@ interface LogEntry {
   text: string;
 }
 
+type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal' | 'unknown';
+
+interface ParsedLog {
+  level: LogLevel;
+  message: string;
+  json: Record<string, unknown> | null;
+}
+
+const LEVEL_RE =
+  /\b(TRACE|DEBUG|INFO(?:RMATION)?|NOTICE|WARN(?:ING)?|ERR(?:OR)?|FATAL|CRIT(?:ICAL)?|EMERG(?:ENCY)?|PANIC)\b/i;
+
+function normalizeLevel(raw: string): LogLevel {
+  const v = raw.toUpperCase();
+  if (v.startsWith('TRACE')) return 'trace';
+  if (v.startsWith('DEBUG')) return 'debug';
+  if (v.startsWith('INFO') || v === 'NOTICE') return 'info';
+  if (v.startsWith('WARN')) return 'warn';
+  if (v.startsWith('ERR')) return 'error';
+  if (v.startsWith('FATAL') || v.startsWith('CRIT') || v.startsWith('EMERG') || v === 'PANIC')
+    return 'fatal';
+  return 'unknown';
+}
+
+function parseLog(entry: LogEntry): ParsedLog {
+  const text = entry.text;
+  const trimmed = text.trim();
+
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const obj = JSON.parse(trimmed) as Record<string, unknown>;
+      const levelRaw =
+        pickString(obj, ['level', 'lvl', 'severity', '@l', 'levelname']) ?? '';
+      const msg =
+        pickString(obj, ['msg', 'message', 'text', '@m']) ?? trimmed;
+      const lvl = levelRaw ? normalizeLevel(levelRaw) : detectLevel(msg);
+      return { level: lvl, message: msg, json: obj };
+    } catch {
+      // fall through
+    }
+  }
+
+  return {
+    level: entry.stream === 'stderr' ? detectLevel(text, 'error') : detectLevel(text),
+    message: text,
+    json: null,
+  };
+}
+
+function pickString(
+  obj: Record<string, unknown>,
+  keys: string[],
+): string | null {
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === 'string' && v.length) return v;
+    if (typeof v === 'number') return String(v);
+  }
+  return null;
+}
+
+function detectLevel(text: string, fallback: LogLevel = 'unknown'): LogLevel {
+  const m = LEVEL_RE.exec(text);
+  if (m) return normalizeLevel(m[1]);
+  return fallback;
+}
+
+const LEVEL_META: Record<
+  LogLevel,
+  { label: string; pill: string; text: string }
+> = {
+  trace: {
+    label: 'TRC',
+    pill: 'border-[var(--color-border)] text-[var(--color-subtle)]',
+    text: 'text-[var(--color-subtle)]',
+  },
+  debug: {
+    label: 'DBG',
+    pill: 'border-[var(--color-border)] text-[var(--color-muted)]',
+    text: 'text-[var(--color-muted)]',
+  },
+  info: {
+    label: 'INF',
+    pill: 'border-emerald-500/30 text-emerald-400',
+    text: 'text-[var(--color-fg)]',
+  },
+  warn: {
+    label: 'WRN',
+    pill: 'border-amber-500/30 text-amber-300',
+    text: 'text-amber-200',
+  },
+  error: {
+    label: 'ERR',
+    pill: 'border-red-500/40 text-red-300',
+    text: 'text-red-200',
+  },
+  fatal: {
+    label: 'FTL',
+    pill: 'border-red-500/60 bg-red-500/10 text-red-200',
+    text: 'text-red-100 font-semibold',
+  },
+  unknown: {
+    label: '···',
+    pill: 'border-[var(--color-border)] text-[var(--color-muted)]',
+    text: 'text-[var(--color-fg)]',
+  },
+};
+
+const LEVEL_ORDER: LogLevel[] = [
+  'trace',
+  'debug',
+  'info',
+  'warn',
+  'error',
+  'fatal',
+];
+
 function LogViewer({ deploymentId }: { deploymentId: string }) {
   const [lines, setLines] = useState<LogEntry[]>([]);
   const [connState, setConnState] = useState<'connecting' | 'open' | 'closed' | 'error'>(
     'connecting',
   );
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  const [filterLevels, setFilterLevels] = useState<Set<LogLevel>>(new Set());
+  const [search, setSearch] = useState('');
+  const [autoscroll, setAutoscroll] = useState(true);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setLines([]);
+    setSelectedIdx(null);
     setConnState('connecting');
     const url = `/api/v1/deployments/${encodeURIComponent(deploymentId)}/logs`;
     const es = new EventSource(url, { withCredentials: true });
@@ -1006,45 +1127,310 @@ function LogViewer({ deploymentId }: { deploymentId: string }) {
     };
   }, [deploymentId]);
 
+  const parsed = useMemo(() => lines.map(parseLog), [lines]);
+
+  const counts = useMemo(() => {
+    const c: Record<LogLevel, number> = {
+      trace: 0,
+      debug: 0,
+      info: 0,
+      warn: 0,
+      error: 0,
+      fatal: 0,
+      unknown: 0,
+    };
+    for (const p of parsed) c[p.level]++;
+    return c;
+  }, [parsed]);
+
+  const visibleIndices = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const out: number[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (filterLevels.size && !filterLevels.has(parsed[i].level)) continue;
+      if (q && !lines[i].text.toLowerCase().includes(q)) continue;
+      out.push(i);
+    }
+    return out;
+  }, [lines, parsed, filterLevels, search]);
+
   useEffect(() => {
+    if (!autoscroll) return;
     const el = containerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [lines]);
+  }, [visibleIndices, autoscroll]);
+
+  function toggleLevel(l: LogLevel) {
+    setFilterLevels((prev) => {
+      const next = new Set(prev);
+      if (next.has(l)) next.delete(l);
+      else next.add(l);
+      return next;
+    });
+  }
 
   const stateTone: SemanticStatus =
     connState === 'open' ? 'ok' : connState === 'error' ? 'error' : 'muted';
 
+  const selected =
+    selectedIdx != null && selectedIdx < lines.length
+      ? { entry: lines[selectedIdx], parsed: parsed[selectedIdx] }
+      : null;
+
   return (
     <Card className="overflow-hidden">
-      <div className="flex items-center justify-between border-b border-[var(--color-border)] px-4 py-2 text-xs">
-        <CopyableId value={deploymentId} display={deploymentId.slice(0, 8)} />
-        <StatusPill
-          status={stateTone}
-          label={connState}
-          pulse={connState === 'connecting'}
-        />
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] px-4 py-2 text-xs">
+        <div className="flex items-center gap-3">
+          <CopyableId value={deploymentId} display={deploymentId.slice(0, 8)} />
+          <StatusPill
+            status={stateTone}
+            label={connState}
+            pulse={connState === 'connecting'}
+          />
+          <span className="text-[var(--color-muted)]">{lines.length} lines</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="filter…"
+            className="h-7 w-40 rounded-md border border-[var(--color-border)] bg-transparent px-2 text-xs focus:border-[var(--color-accent)] focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => setAutoscroll((v) => !v)}
+            className={[
+              'rounded-md border px-2 py-1 transition-colors',
+              autoscroll
+                ? 'border-[var(--color-accent)] text-[var(--color-fg)]'
+                : 'border-[var(--color-border)] text-[var(--color-muted)] hover:text-[var(--color-fg)]',
+            ].join(' ')}
+            title="Toggle autoscroll"
+          >
+            ↓ follow
+          </button>
+        </div>
       </div>
-      <div
-        ref={containerRef}
-        className="max-h-[28rem] overflow-auto bg-black/30 p-3 font-mono text-xs"
-      >
-        {lines.length === 0 ? (
-          <div className="text-[var(--color-muted)]">Waiting for logs…</div>
-        ) : (
-          lines.map((l, i) => (
-            <div
-              key={i}
-              className={l.stream === 'stderr' ? 'text-red-300' : 'text-[var(--color-fg)]'}
+
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-[var(--color-border)] px-4 py-2 text-[10px]">
+        {LEVEL_ORDER.map((l) => {
+          const meta = LEVEL_META[l];
+          const active = filterLevels.has(l);
+          return (
+            <button
+              key={l}
+              type="button"
+              onClick={() => toggleLevel(l)}
+              className={[
+                'rounded-md border px-1.5 py-0.5 font-mono uppercase tracking-wider transition-colors',
+                meta.pill,
+                active
+                  ? 'bg-[var(--color-fg)]/5 ring-1 ring-inset ring-[var(--color-border-strong)]'
+                  : 'opacity-70 hover:opacity-100',
+              ].join(' ')}
+              title={`${l} · ${counts[l]}`}
             >
-              <span className="mr-2 text-[var(--color-muted)]">
-                {new Date(l.ts).toLocaleTimeString()}
-              </span>
-              {l.text}
+              {meta.label} {counts[l]}
+            </button>
+          );
+        })}
+        {filterLevels.size > 0 || search ? (
+          <button
+            type="button"
+            onClick={() => {
+              setFilterLevels(new Set());
+              setSearch('');
+            }}
+            className="ml-1 text-[var(--color-muted)] hover:text-[var(--color-fg)]"
+          >
+            clear
+          </button>
+        ) : null}
+        <span className="ml-auto text-[var(--color-muted)]">
+          {visibleIndices.length} shown
+        </span>
+      </div>
+
+      <div
+        className={[
+          'grid bg-black/30',
+          selected ? 'grid-cols-[1fr_360px]' : 'grid-cols-1',
+        ].join(' ')}
+      >
+        <div
+          ref={containerRef}
+          className="max-h-[32rem] overflow-auto p-2 font-mono text-xs"
+        >
+          {visibleIndices.length === 0 ? (
+            <div className="px-2 py-3 text-[var(--color-muted)]">
+              {lines.length === 0 ? 'Waiting for logs…' : 'Nothing matches the filters.'}
             </div>
-          ))
-        )}
+          ) : (
+            visibleIndices.map((i) => {
+              const entry = lines[i];
+              const p = parsed[i];
+              const meta = LEVEL_META[p.level];
+              const isSelected = selectedIdx === i;
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => setSelectedIdx(isSelected ? null : i)}
+                  className={[
+                    'flex w-full items-start gap-2 rounded-sm px-1.5 py-0.5 text-left transition-colors',
+                    isSelected
+                      ? 'bg-white/[0.07]'
+                      : 'hover:bg-white/[0.03]',
+                  ].join(' ')}
+                >
+                  <span className="shrink-0 text-[var(--color-subtle)]">
+                    {new Date(entry.ts).toLocaleTimeString()}
+                  </span>
+                  <span
+                    className={[
+                      'shrink-0 rounded border px-1 text-[10px] uppercase tracking-wider',
+                      meta.pill,
+                    ].join(' ')}
+                  >
+                    {meta.label}
+                  </span>
+                  {entry.stream === 'stderr' ? (
+                    <span className="shrink-0 text-[10px] uppercase text-red-400/60">
+                      err
+                    </span>
+                  ) : null}
+                  <span className={['min-w-0 flex-1 break-words', meta.text].join(' ')}>
+                    {p.message}
+                  </span>
+                </button>
+              );
+            })
+          )}
+        </div>
+
+        {selected ? (
+          <LogDetailPanel
+            entry={selected.entry}
+            parsed={selected.parsed}
+            onClose={() => setSelectedIdx(null)}
+          />
+        ) : null}
       </div>
     </Card>
+  );
+}
+
+function LogDetailPanel({
+  entry,
+  parsed,
+  onClose,
+}: {
+  entry: LogEntry;
+  parsed: ParsedLog;
+  onClose: () => void;
+}) {
+  const meta = LEVEL_META[parsed.level];
+  const pretty = parsed.json ? JSON.stringify(parsed.json, null, 2) : null;
+
+  async function copy(s: string) {
+    try {
+      await navigator.clipboard.writeText(s);
+    } catch {
+      // ignore
+    }
+  }
+
+  return (
+    <aside className="flex max-h-[32rem] flex-col border-l border-[var(--color-border)] bg-[var(--color-surface-elevated)] font-mono text-xs">
+      <div className="flex items-center justify-between border-b border-[var(--color-border)] px-3 py-2">
+        <span className="flex items-center gap-2">
+          <span
+            className={[
+              'rounded border px-1 text-[10px] uppercase tracking-wider',
+              meta.pill,
+            ].join(' ')}
+          >
+            {meta.label}
+          </span>
+          <span className="text-[var(--color-muted)]">log entry</span>
+        </span>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="text-[var(--color-muted)] hover:text-[var(--color-fg)]"
+        >
+          ✕
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        <Field2 label="Timestamp" value={new Date(entry.ts).toLocaleString()} />
+        <Field2 label="Stream" value={entry.stream} />
+        <Field2 label="Level" value={parsed.level} />
+        <Field2 label="Message" value={parsed.message} multiline />
+
+        {pretty ? (
+          <div className="border-t border-[var(--color-border)] px-3 py-2">
+            <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--color-muted)]">
+              <span>JSON</span>
+              <button
+                type="button"
+                onClick={() => copy(pretty)}
+                className="text-[var(--color-muted)] hover:text-[var(--color-fg)]"
+              >
+                copy
+              </button>
+            </div>
+            <pre className="overflow-x-auto whitespace-pre rounded bg-black/40 p-2 text-[11px] leading-relaxed">
+              {pretty}
+            </pre>
+          </div>
+        ) : null}
+
+        <div className="border-t border-[var(--color-border)] px-3 py-2">
+          <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--color-muted)]">
+            <span>Raw</span>
+            <button
+              type="button"
+              onClick={() => copy(entry.text)}
+              className="text-[var(--color-muted)] hover:text-[var(--color-fg)]"
+            >
+              copy
+            </button>
+          </div>
+          <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded bg-black/40 p-2 text-[11px] leading-relaxed">
+            {entry.text}
+          </pre>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function Field2({
+  label,
+  value,
+  multiline,
+}: {
+  label: string;
+  value: string;
+  multiline?: boolean;
+}) {
+  return (
+    <div className="border-b border-[var(--color-border)] px-3 py-2">
+      <div className="text-[10px] uppercase tracking-wider text-[var(--color-muted)]">
+        {label}
+      </div>
+      <div
+        className={[
+          'mt-0.5 text-[11px] text-[var(--color-fg)]',
+          multiline ? 'whitespace-pre-wrap break-words' : 'truncate',
+        ].join(' ')}
+      >
+        {value}
+      </div>
+    </div>
   );
 }
 
