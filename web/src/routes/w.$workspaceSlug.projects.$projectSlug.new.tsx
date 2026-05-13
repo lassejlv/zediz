@@ -366,10 +366,10 @@ function NewServicePage() {
             value={cpuMillis}
             onChange={setCpuMillis}
             min={100}
-            max={8000}
+            max={1000}
             step={100}
             suffix="millis"
-            hint={`≈ ${(cpuMillis / 1000).toFixed(2)} cores`}
+            hint={`≈ ${(cpuMillis / 1000).toFixed(2)} cores · capped at 1 core for now`}
           />
           <NumberField
             id="svc-mem"
@@ -377,9 +377,10 @@ function NewServicePage() {
             value={memoryMb}
             onChange={setMemoryMb}
             min={64}
-            max={32_768}
+            max={1024}
             step={64}
             suffix="MB"
+            hint="capped at 1 GB for now"
           />
           <NumberField
             id="svc-disk"
