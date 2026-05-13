@@ -36,14 +36,7 @@ export const Route = createFileRoute('/w/$workspaceSlug/projects/')({
   component: ProjectsPage,
 });
 
-const LOCATIONS = [
-  { value: 'nbg1', label: 'Nuremberg, DE' },
-  { value: 'fsn1', label: 'Falkenstein, DE' },
-  { value: 'hel1', label: 'Helsinki, FI' },
-  { value: 'ash', label: 'Ashburn, US' },
-  { value: 'hil', label: 'Hillsboro, US' },
-  { value: 'sin', label: 'Singapore' },
-];
+const LOCATIONS = [{ value: 'fsn1', label: 'Falkenstein, DE' }];
 
 function ProjectsPage() {
   const { workspaceSlug } = Route.useParams();
@@ -152,7 +145,7 @@ function NewProjectSheet({
   const create = useCreateProject(workspaceSlug);
   const [slug, setSlug] = useState('');
   const [name, setName] = useState('');
-  const [hetznerLocation, setHetznerLocation] = useState('nbg1');
+  const [hetznerLocation, setHetznerLocation] = useState('fsn1');
   const [error, setError] = useState<string | null>(null);
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
@@ -162,7 +155,7 @@ function NewProjectSheet({
       await create.mutateAsync({ slug, name, hetzner_location: hetznerLocation });
       setSlug('');
       setName('');
-      setHetznerLocation('nbg1');
+      setHetznerLocation('fsn1');
       onOpenChange(false);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Something went wrong');
