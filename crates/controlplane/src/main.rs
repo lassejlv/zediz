@@ -94,9 +94,11 @@ async fn connect_and_migrate(config: &Config) -> Result<db::Db> {
             db::migrate(&migration_pool).await?;
             drop(migration_pool);
 
-            db::connect(runtime_url)
+            let runtime_pool = db::connect(runtime_url)
                 .await
-                .context("connecting pooled runtime database")
+                .context("connecting pooled runtime database")?;
+            db::ensure_runtime_schema(&runtime_pool).await?;
+            Ok(runtime_pool)
         }
         _ => {
             let pool = db::connect(&config.database_url)

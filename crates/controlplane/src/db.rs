@@ -30,6 +30,14 @@ pub async fn migrate(db: &Db) -> Result<()> {
     crate::migration::Migrator::up(db, None)
         .await
         .context("running migrations")?;
+    ensure_runtime_schema(db).await?;
+    Ok(())
+}
+
+pub async fn ensure_runtime_schema(db: &Db) -> Result<()> {
+    crate::migration::ensure_runtime_schema(db)
+        .await
+        .context("repairing runtime schema compatibility")?;
     Ok(())
 }
 

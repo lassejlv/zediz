@@ -79,6 +79,13 @@ impl MigrationTrait for RepairGitHubAppBuildsSchema {
     }
 }
 
+pub async fn ensure_runtime_schema(db: &sea_orm::DatabaseConnection) -> Result<(), DbErr> {
+    for statement in split_sql_statements(ADD_GITHUB_APP_BUILDS_SQL) {
+        db.execute_unprepared(statement).await?;
+    }
+    Ok(())
+}
+
 fn split_sql_statements(sql: &str) -> impl Iterator<Item = &str> {
     sql.split(';')
         .map(str::trim)
