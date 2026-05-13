@@ -103,7 +103,13 @@ async fn callback(
             .fetch_optional(state.pool())
             .await
             .map_err(|e| ApiError::Internal(anyhow::anyhow!("{e}")))?;
-            row.ok_or(ApiError::NotFound)?.0
+            row.ok_or_else(|| {
+                ApiError::Validation(
+                    "GitHub callback is missing workspace state; start the connection from Driftbase credentials"
+                        .into(),
+                )
+            })?
+            .0
         }
     };
 
@@ -118,10 +124,16 @@ async fn callback(
     let installation = if let Some(code) = query.code.as_deref().filter(|c| !c.is_empty()) {
         let token = github_app::exchange_oauth_code(config, code)
             .await
-            .map_err(ApiError::Internal)?;
+            .map_err(|err| {
+                tracing::error!(error = ?err, "GitHub OAuth exchange failed");
+                ApiError::Internal(err)
+            })?;
         let installations = github_app::user_installations(&token.access_token)
             .await
-            .map_err(ApiError::Internal)?;
+            .map_err(|err| {
+                tracing::error!(error = ?err, "GitHub user installations lookup failed");
+                ApiError::Internal(err)
+            })?;
         installations
             .into_iter()
             .find(|installation| installation.id == expected_installation_id)
@@ -129,15 +141,24 @@ async fn callback(
     } else {
         github_app::installation_by_id(config, expected_installation_id)
             .await
-            .map_err(ApiError::Internal)?
+            .map_err(|err| {
+                tracing::error!(error = ?err, installation_id = expected_installation_id, "GitHub installation lookup failed");
+                ApiError::Internal(err)
+            })?
     };
 
     github_app::upsert_installation(state.pool(), &ctx.workspace_id.to_string(), &installation)
         .await
-        .map_err(ApiError::Internal)?;
+        .map_err(|err| {
+            tracing::error!(error = ?err, installation_id = installation.id, "GitHub installation upsert failed");
+            ApiError::Internal(err)
+        })?;
     let repos = github_app::installation_repositories(config, installation.id)
         .await
-        .map_err(ApiError::Internal)?;
+        .map_err(|err| {
+            tracing::error!(error = ?err, installation_id = installation.id, "GitHub repository sync lookup failed");
+            ApiError::Internal(err)
+        })?;
     github_app::sync_repositories(
         state.pool(),
         &ctx.workspace_id.to_string(),
@@ -145,7 +166,10 @@ async fn callback(
         &repos,
     )
     .await
-    .map_err(ApiError::Internal)?;
+    .map_err(|err| {
+        tracing::error!(error = ?err, installation_id = installation.id, "GitHub repository cache update failed");
+        ApiError::Internal(err)
+    })?;
 
     Ok(Redirect::temporary(&format!(
         "{}/w/{}/credentials?github=connected",
