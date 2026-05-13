@@ -7,6 +7,7 @@ on:
       - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'web/**'
       - 'Dockerfile.controlplane'
       - '.github/workflows/controlplane-image.yml'
   workflow_dispatch:
