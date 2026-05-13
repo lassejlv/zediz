@@ -9,6 +9,7 @@ impl MigratorTrait for Migrator {
             Box::new(InitialSchema),
             Box::new(AddManagedRuntimeSchema),
             Box::new(AddGitHubAppBuildsSchema),
+            Box::new(RepairGitHubAppBuildsSchema),
         ]
     }
 }
@@ -55,6 +56,20 @@ struct AddGitHubAppBuildsSchema;
 
 #[async_trait::async_trait]
 impl MigrationTrait for AddGitHubAppBuildsSchema {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let db = manager.get_connection();
+        for statement in split_sql_statements(ADD_GITHUB_APP_BUILDS_SQL) {
+            db.execute_unprepared(statement).await?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(DeriveMigrationName)]
+struct RepairGitHubAppBuildsSchema;
+
+#[async_trait::async_trait]
+impl MigrationTrait for RepairGitHubAppBuildsSchema {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         let db = manager.get_connection();
         for statement in split_sql_statements(ADD_GITHUB_APP_BUILDS_SQL) {
