@@ -1,14 +1,28 @@
 import { createFileRoute, Link, redirect, useNavigate } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
-import { useState, type FormEvent } from 'react';
-import { ArrowLeft, Container, GitBranch, Plus, Trash2 } from 'lucide-react';
+import { useMemo, useState, type FormEvent } from 'react';
+import {
+  ArrowLeft,
+  Check,
+  Container,
+  Dices,
+  GitBranch,
+  HardDrive,
+  Loader2,
+  Plus,
+  Sparkles,
+  Trash2,
+  Zap,
+} from 'lucide-react';
 import { meQuery } from '@/lib/auth';
 import { projectQuery } from '@/lib/projects';
 import {
   useCreateService,
+  useDeployService,
   useVariableReferences,
   type CreateServiceInput,
 } from '@/lib/services';
+import { useAttachVolume, useCreateVolume } from '@/lib/volumes';
 import { githubRepositoriesQuery, type GitHubRepositorySummary } from '@/lib/github';
 import { usePublicSettings } from '@/lib/settings';
 import { canWrite, workspaceQuery } from '@/lib/workspaces';
@@ -23,6 +37,14 @@ import {
   Select,
   Stack,
 } from '@/components/ui';
+import {
+  TEMPLATES,
+  findTemplate,
+  generateRandomPassword,
+  slugify as templateSlugify,
+  type Template,
+  type TemplateEnv,
+} from '@/lib/templates';
 import type {
   PortMap,
   RestartPolicy,
@@ -37,7 +59,7 @@ export const Route = createFileRoute('/w/$workspaceSlug/projects/$projectSlug/ne
   component: NewServicePage,
 });
 
-type Source = 'image' | 'git';
+type Source = 'image' | 'git' | 'template';
 
 interface PortRow {
   container: string;
@@ -50,6 +72,14 @@ interface EnvRow {
   value: string;
 }
 
+type TemplatePhase = 'idle' | 'creating' | 'volume' | 'attach' | 'deploying';
+const TEMPLATE_PHASE_LABEL: Record<Exclude<TemplatePhase, 'idle'>, string> = {
+  creating: 'Creating service…',
+  volume: 'Provisioning volume…',
+  attach: 'Attaching volume…',
+  deploying: 'Kicking off first deploy…',
+};
+
 function NewServicePage() {
   const { workspaceSlug, projectSlug } = Route.useParams();
   const workspace = useQuery(workspaceQuery(workspaceSlug));
@@ -61,17 +91,22 @@ function NewServicePage() {
   });
   const variableReferences = useVariableReferences(workspaceSlug, projectSlug);
   const create = useCreateService(workspaceSlug, projectSlug);
+  const createVolume = useCreateVolume(workspaceSlug);
   const navigate = useNavigate();
 
   const canCreate = canWrite(workspace.data);
 
   const [source, setSource] = useState<Source>('image');
 
+  // --- shared basics ---
   const [slug, setSlug] = useState('');
   const [slugTouched, setSlugTouched] = useState(false);
   const [name, setName] = useState('');
+
+  // --- image source ---
   const [image, setImage] = useState('');
 
+  // --- git source ---
   const [gitRepo, setGitRepo] = useState('');
   const [gitBranch, setGitBranch] = useState('main');
   const [builder, setBuilder] = useState<'dockerfile' | 'railpack'>('dockerfile');
@@ -79,10 +114,21 @@ function NewServicePage() {
   const [rootDir, setRootDir] = useState('.');
   const [githubRepoKey, setGithubRepoKey] = useState('');
 
+  // --- template source ---
+  const [templateId, setTemplateId] = useState<string | null>(null);
+  const template = templateId ? findTemplate(templateId) ?? null : null;
+  const [templateEnv, setTemplateEnv] = useState<Record<string, string>>({});
+  const [volumeSizeGb, setVolumeSizeGb] = useState(10);
+  const [templatePhase, setTemplatePhase] = useState<TemplatePhase>('idle');
+
+  // Attach/deploy hooks need slug at call-time. Rules of hooks: call always.
+  const attach = useAttachVolume(workspaceSlug, projectSlug, slug);
+  const deployService = useDeployService(workspaceSlug, projectSlug, slug);
+
+  // --- generic config (image/git only) ---
   const [ports, setPorts] = useState<PortRow[]>([]);
   const [envRows, setEnvRows] = useState<EnvRow[]>([]);
   const [restartPolicy, setRestartPolicy] = useState<RestartPolicy>('on-failure');
-
   const [cpuMillis, setCpuMillis] = useState(500);
   const [memoryMb, setMemoryMb] = useState(256);
   const [diskMb, setDiskMb] = useState(1024);
@@ -96,9 +142,24 @@ function NewServicePage() {
     if (!slugTouched) setSlug(slugify(next));
   }
 
+  function selectTemplate(t: Template) {
+    setTemplateId(t.id);
+    setName(t.defaultName);
+    setSlug(t.defaultSlug);
+    setSlugTouched(false);
+    setTemplateEnv(initialEnvValues(t));
+    setVolumeSizeGb(t.volume?.defaultSizeGb ?? 10);
+  }
+
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
+
+    if (source === 'template') {
+      await submitTemplate();
+      return;
+    }
+
     try {
       const parsedPorts = parsePorts(ports);
       const env_vars = parseEnv(envRows);
@@ -163,6 +224,80 @@ function NewServicePage() {
     }
   }
 
+  async function submitTemplate() {
+    if (!template) {
+      setError('Pick a template first.');
+      return;
+    }
+
+    const trimmedSlug = templateSlugify(slug);
+    const trimmedName = name.trim();
+    if (!trimmedSlug || !trimmedName) {
+      setError('Name and slug are required.');
+      return;
+    }
+    for (const env of template.envVars) {
+      if (env.required && !templateEnv[env.key]?.trim()) {
+        setError(`${env.key} is required.`);
+        return;
+      }
+    }
+
+    const env_vars: Record<string, string> = {};
+    for (const env of template.envVars) {
+      const value = templateEnv[env.key];
+      if (value === undefined || value === '') continue;
+      env_vars[env.key] = value;
+    }
+
+    const payload: CreateServiceInput = {
+      slug: trimmedSlug,
+      name: trimmedName,
+      source: 'image',
+      image_ref: template.image,
+      env_vars,
+      ports: template.ports,
+      resources: template.resources,
+      restart_policy: 'on-failure',
+    };
+
+    try {
+      setTemplatePhase('creating');
+      const service = await create.mutateAsync(payload);
+
+      if (template.volume) {
+        setTemplatePhase('volume');
+        const volume = await createVolume.mutateAsync({
+          name: `${service.slug}-${randomSuffix()}`,
+          size_gb: volumeSizeGb,
+        });
+
+        setTemplatePhase('attach');
+        await attach.mutateAsync({
+          volume_id: volume.id,
+          mount_path: template.volume.mountPath,
+        });
+      }
+
+      setTemplatePhase('deploying');
+      await deployService.mutateAsync();
+
+      navigate({
+        to: '/w/$workspaceSlug/projects/$projectSlug/$serviceSlug',
+        params: { workspaceSlug, projectSlug, serviceSlug: service.slug },
+      });
+    } catch (err) {
+      setTemplatePhase('idle');
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'Something went wrong',
+      );
+    }
+  }
+
   if (!canCreate && workspace.data) {
     return (
       <div className="mx-auto max-w-2xl py-12 text-center">
@@ -172,6 +307,8 @@ function NewServicePage() {
       </div>
     );
   }
+
+  const submitting = create.isPending || templatePhase !== 'idle';
 
   return (
     <form
@@ -188,43 +325,62 @@ function NewServicePage() {
         </Link>
         <h1 className="mt-2 text-2xl font-semibold tracking-tight">New service</h1>
         <p className="mt-1 text-sm text-[var(--color-muted)]">
-          Run a container from a published image, or build one from a Git repo on every deploy.
+          Pick a template, run a published image, or build one from a Git repo.
         </p>
       </div>
 
       <Section title="Source" description="Where the container image comes from.">
-        <SourcePicker value={source} onChange={setSource} />
+        <SourcePicker
+          value={source}
+          onChange={(v) => {
+            setSource(v);
+            setError(null);
+          }}
+        />
       </Section>
 
-      <Section title="Basics">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Display name" htmlFor="svc-name" hint="Shown everywhere in the UI.">
-            <Input
-              id="svc-name"
-              required
-              placeholder="Web frontend"
-              value={name}
-              onChange={(e) => onNameChange(e.target.value)}
-            />
-          </Field>
-          <Field
-            label="Slug"
-            htmlFor="svc-slug"
-            hint="URL-safe; auto-filled from the name. Lowercase, digits, dashes."
-          >
-            <Input
-              id="svc-slug"
-              required
-              placeholder="web"
-              value={slug}
-              onChange={(e) => {
-                setSlug(e.target.value);
-                setSlugTouched(true);
-              }}
-            />
-          </Field>
-        </div>
-      </Section>
+      {source === 'template' ? (
+        <Section
+          title="Template"
+          description="One-click configs. We set image, env, ports, resources, and a persistent volume."
+        >
+          <TemplateGallery selectedId={templateId} onSelect={selectTemplate} />
+        </Section>
+      ) : null}
+
+      {source !== 'template' || template ? (
+        <Section title="Basics">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Display name" htmlFor="svc-name" hint="Shown everywhere in the UI.">
+              <Input
+                id="svc-name"
+                required
+                placeholder="Web frontend"
+                value={name}
+                onChange={(e) => onNameChange(e.target.value)}
+                disabled={submitting}
+              />
+            </Field>
+            <Field
+              label="Slug"
+              htmlFor="svc-slug"
+              hint="URL-safe; auto-filled from the name. Lowercase, digits, dashes."
+            >
+              <Input
+                id="svc-slug"
+                required
+                placeholder="web"
+                value={slug}
+                onChange={(e) => {
+                  setSlug(e.target.value);
+                  setSlugTouched(true);
+                }}
+                disabled={submitting}
+              />
+            </Field>
+          </div>
+        </Section>
+      ) : null}
 
       {source === 'image' ? (
         <Section
@@ -238,10 +394,13 @@ function NewServicePage() {
               placeholder="ghcr.io/org/app:v1"
               value={image}
               onChange={(e) => setImage(e.target.value)}
+              disabled={submitting}
             />
           </Field>
         </Section>
-      ) : (
+      ) : null}
+
+      {source === 'git' ? (
         <Section title="Git source" description="Driftbase builds the image from this repo on deploy.">
           {settings.data?.github_app_configured ? (
             <Field
@@ -282,7 +441,7 @@ function NewServicePage() {
                 required
                 placeholder="https://github.com/org/repo"
                 value={gitRepo}
-                disabled={!!githubRepoKey}
+                disabled={!!githubRepoKey || submitting}
                 onChange={(e) => setGitRepo(e.target.value)}
               />
             </Field>
@@ -292,6 +451,7 @@ function NewServicePage() {
                 placeholder="main"
                 value={gitBranch}
                 onChange={(e) => setGitBranch(e.target.value)}
+                disabled={submitting}
               />
             </Field>
           </div>
@@ -306,6 +466,7 @@ function NewServicePage() {
                 placeholder="."
                 value={rootDir}
                 onChange={(e) => setRootDir(e.target.value)}
+                disabled={submitting}
               />
             </Field>
             <Field
@@ -321,6 +482,7 @@ function NewServicePage() {
                 id="svc-builder"
                 value={builder}
                 onChange={(e) => setBuilder(e.target.value as 'dockerfile' | 'railpack')}
+                disabled={submitting}
               >
                 <option value="dockerfile">Dockerfile</option>
                 <option value="railpack">Railpack (auto-detect)</option>
@@ -334,99 +496,199 @@ function NewServicePage() {
                 placeholder="Dockerfile"
                 value={dockerfilePath}
                 onChange={(e) => setDockerfilePath(e.target.value)}
+                disabled={submitting}
               />
             </Field>
           ) : null}
         </Section>
-      )}
+      ) : null}
 
-      <Section
-        title="Ports"
-        description="Expose container ports. Host port is optional — domains reach the container via the internal network, so most services leave it blank."
-      >
-        <PortsEditor rows={ports} onChange={setPorts} />
-      </Section>
+      {source === 'template' && template ? (
+        <>
+          {template.envVars.length > 0 ? (
+            <Section
+              title="Configuration"
+              description="Environment variables passed to the container."
+            >
+              <Stack gap={4}>
+                {template.envVars.map((env) => (
+                  <TemplateEnvInput
+                    key={env.key}
+                    env={env}
+                    value={templateEnv[env.key] ?? ''}
+                    onChange={(v) =>
+                      setTemplateEnv((prev) => ({ ...prev, [env.key]: v }))
+                    }
+                    disabled={submitting}
+                  />
+                ))}
+              </Stack>
+            </Section>
+          ) : null}
 
-      <Section
-        title="Environment variables"
-        description="Injected into the container at launch."
-      >
-        <EnvEditor
-          rows={envRows}
-          onChange={setEnvRows}
-          references={variableReferences.data}
-        />
-      </Section>
+          {template.volume ? (
+            <Section
+              title="Storage"
+              description={`Block volume mounted at ${template.volume.mountPath}.`}
+            >
+              <Field
+                label="Size"
+                htmlFor="tpl-size"
+                hint={`${template.volume.defaultSizeGb} GB is plenty for most cases.`}
+              >
+                <div className="space-y-2">
+                  <input
+                    type="range"
+                    min={10}
+                    max={500}
+                    step={10}
+                    value={Math.min(Math.max(volumeSizeGb, 10), 500)}
+                    onChange={(e) => setVolumeSizeGb(Number(e.target.value))}
+                    disabled={submitting}
+                    className="w-full accent-[var(--color-accent)]"
+                  />
+                  <div className="flex items-center gap-2">
+                    <Input
+                      id="tpl-size"
+                      type="number"
+                      min={10}
+                      max={10240}
+                      step={1}
+                      value={volumeSizeGb}
+                      onChange={(e) => setVolumeSizeGb(Number(e.target.value) || 0)}
+                      disabled={submitting}
+                      className="w-28"
+                    />
+                    <span className="text-sm text-[var(--color-muted)]">GB</span>
+                  </div>
+                </div>
+              </Field>
+            </Section>
+          ) : null}
 
-      <Section title="Resources" description="Reserved on the node that runs this service.">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <NumberField
-            id="svc-cpu"
-            label="CPU"
-            value={cpuMillis}
-            onChange={setCpuMillis}
-            min={100}
-            max={1000}
-            step={100}
-            suffix="millis"
-            hint={`≈ ${(cpuMillis / 1000).toFixed(2)} cores · capped at 1 core for now`}
-          />
-          <NumberField
-            id="svc-mem"
-            label="Memory"
-            value={memoryMb}
-            onChange={setMemoryMb}
-            min={64}
-            max={1024}
-            step={64}
-            suffix="MB"
-            hint="capped at 1 GB for now"
-          />
-          <NumberField
-            id="svc-disk"
-            label="Disk"
-            value={diskMb}
-            onChange={setDiskMb}
-            min={512}
-            max={102_400}
-            step={256}
-            suffix="MB"
-          />
-        </div>
-      </Section>
+          {template.notes ? (
+            <Card className="border-dashed p-4 text-xs leading-relaxed text-[var(--color-muted)]">
+              {template.notes}
+            </Card>
+          ) : null}
+        </>
+      ) : null}
 
-      <Section title="Runtime">
-        <Field label="Restart policy" htmlFor="svc-restart">
-          <Select
-            id="svc-restart"
-            value={restartPolicy}
-            onChange={(e) => setRestartPolicy(e.target.value as RestartPolicy)}
+      {source !== 'template' ? (
+        <>
+          <Section
+            title="Ports"
+            description="Expose container ports. Host port is optional — domains reach the container via the internal network, so most services leave it blank."
           >
-            <option value="no">no (never restart)</option>
-            <option value="on-failure">on-failure</option>
-            <option value="always">always</option>
-          </Select>
-        </Field>
-      </Section>
+            <PortsEditor rows={ports} onChange={setPorts} />
+          </Section>
+
+          <Section
+            title="Environment variables"
+            description="Injected into the container at launch."
+          >
+            <EnvEditor
+              rows={envRows}
+              onChange={setEnvRows}
+              references={variableReferences.data}
+            />
+          </Section>
+
+          <Section title="Resources" description="Reserved on the node that runs this service.">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <NumberField
+                id="svc-cpu"
+                label="CPU"
+                value={cpuMillis}
+                onChange={setCpuMillis}
+                min={100}
+                max={1000}
+                step={100}
+                suffix="millis"
+                hint={`≈ ${(cpuMillis / 1000).toFixed(2)} cores · capped at 1 core for now`}
+              />
+              <NumberField
+                id="svc-mem"
+                label="Memory"
+                value={memoryMb}
+                onChange={setMemoryMb}
+                min={64}
+                max={1024}
+                step={64}
+                suffix="MB"
+                hint="capped at 1 GB for now"
+              />
+              <NumberField
+                id="svc-disk"
+                label="Disk"
+                value={diskMb}
+                onChange={setDiskMb}
+                min={512}
+                max={102_400}
+                step={256}
+                suffix="MB"
+              />
+            </div>
+          </Section>
+
+          <Section title="Runtime">
+            <Field label="Restart policy" htmlFor="svc-restart">
+              <Select
+                id="svc-restart"
+                value={restartPolicy}
+                onChange={(e) => setRestartPolicy(e.target.value as RestartPolicy)}
+              >
+                <option value="no">no (never restart)</option>
+                <option value="on-failure">on-failure</option>
+                <option value="always">always</option>
+              </Select>
+            </Field>
+          </Section>
+        </>
+      ) : null}
 
       {error ? <ErrorText>{error}</ErrorText> : null}
 
       <div className="fixed inset-x-0 bottom-0 z-10 border-t border-[var(--color-border)] bg-[var(--color-bg)]/90 backdrop-blur">
         <div className="mx-auto flex max-w-3xl items-center justify-between px-6 py-3">
-          <span className="text-xs text-[var(--color-muted)]">
-            Creates the service — nothing is deployed yet.
+          <span className="flex items-center gap-2 text-xs text-[var(--color-muted)]">
+            {submitting ? (
+              <>
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                {templatePhase !== 'idle'
+                  ? TEMPLATE_PHASE_LABEL[templatePhase as Exclude<TemplatePhase, 'idle'>]
+                  : 'Creating service…'}
+              </>
+            ) : source === 'template' ? (
+              template?.volume
+                ? 'Creates the service, volume, attaches it, and starts a deploy.'
+                : template
+                  ? 'Creates the service and starts a deploy.'
+                  : 'Pick a template to continue.'
+            ) : (
+              'Creates the service — nothing is deployed yet.'
+            )}
           </span>
           <div className="flex gap-2">
             <Link
               to="/w/$workspaceSlug/projects/$projectSlug"
               params={{ workspaceSlug, projectSlug }}
             >
-              <Button type="button" variant="secondary">
+              <Button type="button" variant="secondary" disabled={submitting}>
                 Cancel
               </Button>
             </Link>
-            <Button type="submit" disabled={create.isPending}>
-              {create.isPending ? 'Creating…' : 'Create service'}
+            <Button
+              type="submit"
+              disabled={submitting || (source === 'template' && !template)}
+            >
+              {submitting
+                ? source === 'template'
+                  ? 'Deploying…'
+                  : 'Creating…'
+                : source === 'template'
+                  ? 'Deploy'
+                  : 'Create service'}
             </Button>
           </div>
         </div>
@@ -467,20 +729,27 @@ function SourcePicker({
   onChange: (v: Source) => void;
 }) {
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <SourceOption
+        selected={value === 'template'}
+        onClick={() => onChange('template')}
+        icon={<Sparkles className="h-4 w-4" />}
+        title="Template"
+        body="Postgres, Redis, more. Pre-configured."
+      />
       <SourceOption
         selected={value === 'image'}
         onClick={() => onChange('image')}
-        icon={<Container className="h-5 w-5" />}
+        icon={<Container className="h-4 w-4" />}
         title="Container image"
-        body="Pull a published image on each deploy. Fastest to set up."
+        body="Pull a published image on each deploy."
       />
       <SourceOption
         selected={value === 'git'}
         onClick={() => onChange('git')}
-        icon={<GitBranch className="h-5 w-5" />}
+        icon={<GitBranch className="h-4 w-4" />}
         title="Git repository"
-        body="Driftbase clones, builds, and pushes to the workspace registry."
+        body="Build from source on each deploy."
       />
     </div>
   );
@@ -504,24 +773,216 @@ function SourceOption({
       type="button"
       onClick={onClick}
       className={[
-        'flex flex-col items-start gap-2 rounded-lg border p-4 text-left transition-colors',
+        'group relative flex flex-col items-start gap-2 rounded-lg border p-3.5 text-left transition-all',
         selected
-          ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/5'
-          : 'border-[var(--color-border)] hover:border-[var(--color-border-strong)] hover:bg-black/[0.02] dark:hover:bg-white/[0.02]',
+          ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/[0.06] shadow-[0_0_0_1px_var(--color-accent)]'
+          : 'border-[var(--color-border)] hover:-translate-y-px hover:border-[var(--color-border-strong)]',
       ].join(' ')}
     >
-      <span
-        className={
-          selected ? 'text-[var(--color-accent)]' : 'text-[var(--color-muted)]'
-        }
-      >
-        {icon}
+      <span className="flex items-center gap-2">
+        <span
+          className={
+            selected
+              ? 'text-[var(--color-accent)]'
+              : 'text-[var(--color-muted)] group-hover:text-[var(--color-fg)]'
+          }
+        >
+          {icon}
+        </span>
+        <span className="text-sm font-medium tracking-tight">{title}</span>
       </span>
-      <div>
-        <div className="text-sm font-medium">{title}</div>
-        <div className="mt-0.5 text-xs text-[var(--color-muted)]">{body}</div>
+      <span className="text-[11px] leading-snug text-[var(--color-muted)]">{body}</span>
+      {selected ? (
+        <Check className="absolute right-2 top-2 h-3.5 w-3.5 text-[var(--color-accent)]" />
+      ) : null}
+    </button>
+  );
+}
+
+/* ---------- template gallery ---------- */
+
+function TemplateGallery({
+  selectedId,
+  onSelect,
+}: {
+  selectedId: string | null;
+  onSelect: (t: Template) => void;
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+      {TEMPLATES.map((t) => (
+        <TemplateCard
+          key={t.id}
+          template={t}
+          selected={selectedId === t.id}
+          onClick={() => onSelect(t)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function TemplateCard({
+  template,
+  selected,
+  onClick,
+}: {
+  template: Template;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  const Icon = template.icon;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={[
+        'group relative flex w-full flex-col gap-3 rounded-lg border p-4 text-left transition-all',
+        selected
+          ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/[0.05] shadow-[0_0_0_1px_var(--color-accent),0_8px_30px_-12px_rgba(16,185,129,0.35)]'
+          : 'border-[var(--color-border)] hover:-translate-y-px hover:border-[var(--color-border-strong)] hover:shadow-[0_8px_30px_-16px_rgba(0,0,0,0.35)]',
+      ].join(' ')}
+    >
+      <div className="flex items-start gap-3">
+        <span
+          className={[
+            'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border transition-colors',
+            selected
+              ? 'border-[var(--color-accent)]/40 bg-[var(--color-accent)]/10 text-[var(--color-accent)]'
+              : 'border-[var(--color-border)] text-[var(--color-fg)]',
+          ].join(' ')}
+        >
+          <Icon className="h-4 w-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold tracking-tight">{template.name}</span>
+          </div>
+          <div className="mt-0.5 truncate font-mono text-[10px] text-[var(--color-muted)]">
+            {template.image}
+          </div>
+        </div>
+        {selected ? (
+          <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--color-accent)] text-black">
+            <Check className="h-3 w-3" strokeWidth={3} />
+          </span>
+        ) : null}
+      </div>
+
+      <p className="text-[11px] leading-relaxed text-[var(--color-muted)]">
+        {template.description}
+      </p>
+
+      <div className="flex flex-wrap gap-1.5 text-[10px]">
+        <TemplateChip
+          icon={<Zap className="h-2.5 w-2.5" />}
+          label={`${template.resources.cpu_millis}m · ${template.resources.memory_mb}MB`}
+        />
+        {template.volume ? (
+          <TemplateChip
+            icon={<HardDrive className="h-2.5 w-2.5" />}
+            label={`${template.volume.defaultSizeGb}GB volume`}
+          />
+        ) : null}
+        {template.ports[0] ? (
+          <TemplateChip label={`:${template.ports[0].container_port}`} mono />
+        ) : null}
       </div>
     </button>
+  );
+}
+
+function TemplateChip({
+  icon,
+  label,
+  mono,
+}: {
+  icon?: React.ReactNode;
+  label: string;
+  mono?: boolean;
+}) {
+  return (
+    <span
+      className={[
+        'inline-flex items-center gap-1 rounded-full border border-[var(--color-border)] px-1.5 py-0.5 text-[var(--color-muted)]',
+        mono ? 'font-mono' : '',
+      ].join(' ')}
+    >
+      {icon}
+      {label}
+    </span>
+  );
+}
+
+function TemplateEnvInput({
+  env,
+  value,
+  onChange,
+  disabled,
+}: {
+  env: TemplateEnv;
+  value: string;
+  onChange: (v: string) => void;
+  disabled: boolean;
+}) {
+  const reveal = useMemo(() => env.generate !== 'password', [env.generate]);
+  const [shown, setShown] = useState(reveal);
+  return (
+    <Field
+      label={
+        <span className="flex items-center gap-2">
+          <span className="font-mono text-xs">{env.key}</span>
+          {env.required ? (
+            <span className="text-[10px] font-medium uppercase tracking-wider text-amber-400">
+              required
+            </span>
+          ) : null}
+          {env.readonly ? (
+            <span className="text-[10px] font-medium uppercase tracking-wider text-[var(--color-subtle)]">
+              locked
+            </span>
+          ) : null}
+        </span>
+      }
+      htmlFor={`env-${env.key}`}
+      hint={env.description}
+    >
+      <div className="flex items-center gap-2">
+        <Input
+          id={`env-${env.key}`}
+          type={shown ? 'text' : 'password'}
+          value={value}
+          readOnly={env.readonly}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
+          className="font-mono text-xs"
+        />
+        {env.generate === 'password' ? (
+          <>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                onChange(generateRandomPassword(24));
+                setShown(true);
+              }}
+              disabled={disabled}
+              title="Generate a strong random password"
+            >
+              <Dices className="h-4 w-4" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setShown((v) => !v)}
+              disabled={disabled}
+            >
+              {shown ? 'Hide' : 'Show'}
+            </Button>
+          </>
+        ) : null}
+      </div>
+    </Field>
   );
 }
 
@@ -782,4 +1243,18 @@ function parseEnv(rows: EnvRow[]): Record<string, string> {
     out[key] = r.value;
   }
   return out;
+}
+
+function initialEnvValues(template: Template): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const env of template.envVars) {
+    if (env.defaultValue !== undefined) out[env.key] = env.defaultValue;
+    else if (env.generate === 'password') out[env.key] = generateRandomPassword(24);
+    else out[env.key] = '';
+  }
+  return out;
+}
+
+function randomSuffix(): string {
+  return Math.random().toString(36).slice(2, 6);
 }
