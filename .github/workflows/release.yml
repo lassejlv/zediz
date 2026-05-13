@@ -66,3 +66,15 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/agent:${{ github.ref_name }}
             ${{ !contains(github.ref_name, '-') && format('ghcr.io/{0}/agent:latest', github.repository_owner) || '' }}
+      - name: Build & push edge
+        uses: useblacksmith/build-push-action@fb9e3e6a9299c78462bfadd0d93352c316adc9b8
+        with:
+          context: .
+          file: docker/edge.Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/edge:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/driftbase-edge:${{ github.ref_name }}
+            ${{ !contains(github.ref_name, '-') && format('ghcr.io/{0}/edge:latest', github.repository_owner) || '' }}
+            ${{ !contains(github.ref_name, '-') && format('ghcr.io/{0}/driftbase-edge:latest', github.repository_owner) || '' }}
