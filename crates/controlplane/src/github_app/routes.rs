@@ -55,7 +55,7 @@ async fn start(
 
 #[derive(Deserialize)]
 struct CallbackQuery {
-    code: String,
+    code: Option<String>,
     state: String,
     installation_id: Option<i64>,
 }
@@ -81,21 +81,28 @@ async fn callback(
             "GitHub did not return an installation id".into(),
         ));
     };
-    let token = github_app::exchange_oauth_code(config, &query.code)
-        .await
-        .map_err(ApiError::Internal)?;
-    let installations = github_app::user_installations(&token.access_token)
-        .await
-        .map_err(ApiError::Internal)?;
-    let installation = installations
-        .into_iter()
-        .find(|installation| installation.id == expected_installation_id)
-        .ok_or(ApiError::Unauthorized)?;
+
+    let installation = if let Some(code) = query.code.as_deref().filter(|c| !c.is_empty()) {
+        let token = github_app::exchange_oauth_code(config, code)
+            .await
+            .map_err(ApiError::Internal)?;
+        let installations = github_app::user_installations(&token.access_token)
+            .await
+            .map_err(ApiError::Internal)?;
+        installations
+            .into_iter()
+            .find(|installation| installation.id == expected_installation_id)
+            .ok_or(ApiError::Unauthorized)?
+    } else {
+        github_app::installation_by_id(config, expected_installation_id)
+            .await
+            .map_err(ApiError::Internal)?
+    };
 
     github_app::upsert_installation(state.pool(), &ctx.workspace_id.to_string(), &installation)
         .await
         .map_err(ApiError::Internal)?;
-    let repos = github_app::user_installation_repositories(&token.access_token, installation.id)
+    let repos = github_app::installation_repositories(config, installation.id)
         .await
         .map_err(ApiError::Internal)?;
     github_app::sync_repositories(

@@ -333,40 +333,28 @@ struct RepositoriesPage {
     repositories: Vec<GitHubRepository>,
 }
 
-pub async fn user_installation_repositories(
-    user_token: &str,
+pub async fn installation_by_id(
+    config: &GitHubAppConfig,
     installation_id: i64,
-) -> Result<Vec<GitHubRepository>> {
+) -> Result<GitHubInstallation> {
+    let jwt = app_jwt(config)?;
     let client = github_client();
-    let mut page = 1;
-    let mut out = Vec::new();
-    loop {
-        let res = github_get(
-            &client,
-            format!(
-                "{GITHUB_API}/user/installations/{installation_id}/repositories?per_page=100&page={page}"
-            ),
-            user_token,
-        )
-        .send()
-        .await
-        .context("listing GitHub repositories for user installation")?;
-        if !res.status().is_success() {
-            let status = res.status();
-            let body = res.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "GitHub repositories request failed ({status}): {body}"
-            ));
-        }
-        let body: RepositoriesPage = res.json().await?;
-        let count = body.repositories.len();
-        out.extend(body.repositories);
-        if count < 100 {
-            break;
-        }
-        page += 1;
+    let res = github_get(
+        &client,
+        format!("{GITHUB_API}/app/installations/{installation_id}"),
+        &jwt,
+    )
+    .send()
+    .await
+    .context("fetching GitHub App installation")?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        return Err(anyhow!(
+            "GitHub installation lookup failed ({status}): {body}"
+        ));
     }
-    Ok(out)
+    res.json().await.context("decoding GitHub installation")
 }
 
 pub async fn installation_repositories(
