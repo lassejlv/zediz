@@ -45,7 +45,6 @@ import type { BuildSummary, DeploymentSummary, ServiceSummary } from '@/lib/type
 
 interface ServiceSearch {
   tab?: TopTab;
-  view?: ActivityView;
 }
 
 export const Route = createFileRoute(
@@ -54,18 +53,36 @@ export const Route = createFileRoute(
   component: ServicePage,
   validateSearch: (raw: Record<string, unknown>): ServiceSearch => {
     const tab = raw.tab;
-    const view = raw.view;
-    const validTabs: TopTab[] = ['overview', 'activity', 'networking', 'storage', 'settings'];
-    const validViews: ActivityView[] = ['deployments', 'builds', 'logs', 'console'];
+    const validTabs: TopTab[] = [
+      'overview',
+      'metrics',
+      'deployments',
+      'builds',
+      'logs',
+      'console',
+      'networking',
+      'storage',
+      'settings',
+    ];
     return {
-      tab: typeof tab === 'string' && validTabs.includes(tab as TopTab) ? (tab as TopTab) : undefined,
-      view: typeof view === 'string' && validViews.includes(view as ActivityView) ? (view as ActivityView) : undefined,
+      tab:
+        typeof tab === 'string' && validTabs.includes(tab as TopTab)
+          ? (tab as TopTab)
+          : undefined,
     };
   },
 });
 
-type TopTab = 'overview' | 'activity' | 'networking' | 'storage' | 'settings';
-type ActivityView = 'deployments' | 'builds' | 'logs' | 'console';
+type TopTab =
+  | 'overview'
+  | 'metrics'
+  | 'deployments'
+  | 'builds'
+  | 'logs'
+  | 'console'
+  | 'networking'
+  | 'storage'
+  | 'settings';
 
 function ServicePage() {
   const { workspaceSlug, projectSlug, serviceSlug } = Route.useParams();
@@ -94,7 +111,6 @@ function ServicePage() {
   const [error, setError] = useState<string | null>(null);
   const [activeDeploymentId, setActiveDeploymentId] = useState<string | null>(null);
   const [tab, setTab] = useState<TopTab>(search.tab ?? 'overview');
-  const [activityView, setActivityView] = useState<ActivityView>(search.view ?? 'deployments');
 
   const latest = deployments.data?.[0];
   useEffect(() => {
@@ -161,7 +177,7 @@ function ServicePage() {
             </>
           ),
           detail: truncateImage(latest.image_ref),
-          to: `/w/${workspaceSlug}/projects/${projectSlug}/${serviceSlug}?tab=activity`,
+          to: `/w/${workspaceSlug}/projects/${projectSlug}/${serviceSlug}?tab=deployments`,
         }
       : null,
   );
@@ -228,38 +244,70 @@ function ServicePage() {
         />
       ) : null}
 
-      <Tabs value={tab} onChange={setTab} />
+      <Tabs value={tab} onChange={setTab} showConsole={canDelete} />
 
       {tab === 'overview' ? (
         <OverviewTab
           service={svc}
           deployments={deployments.data ?? []}
           canManage={canDeploy}
-          onSeeAll={() => setTab('activity')}
+          onSeeAll={() => setTab('deployments')}
           onRestart={(id) => restart.mutate(id)}
           onStop={(id) => stop.mutate(id)}
           activeId={activeDeploymentId}
           onSelect={(id) => setActiveDeploymentId(id)}
+        />
+      ) : null}
+
+      {tab === 'metrics' && svc ? (
+        <ServiceMetricsTab
+          service={svc}
           workspaceSlug={workspaceSlug}
           projectSlug={projectSlug}
           serviceSlug={serviceSlug}
         />
       ) : null}
 
-      {tab === 'activity' ? (
-        <ActivityTab
-          view={activityView}
-          onViewChange={setActivityView}
+      {tab === 'deployments' ? (
+        <DeploymentsTable
           deployments={deployments.data ?? []}
+          canManage={canDeploy}
           activeId={activeDeploymentId}
-          onSelect={(id) => setActiveDeploymentId(id)}
+          onSelect={(id) => {
+            setActiveDeploymentId(id);
+            setTab('logs');
+          }}
           onStop={(id) => stop.mutate(id)}
           onRestart={(id) => restart.mutate(id)}
+        />
+      ) : null}
+
+      {tab === 'builds' ? (
+        <BuildsTab
           workspaceSlug={workspaceSlug}
           projectSlug={projectSlug}
           serviceSlug={serviceSlug}
           canManage={canDeploy}
-          canConsole={canDelete}
+          onViewLogs={(deploymentId) => {
+            setActiveDeploymentId(deploymentId);
+            setTab('logs');
+          }}
+        />
+      ) : null}
+
+      {tab === 'logs' ? (
+        <LogsTab
+          deployments={deployments.data ?? []}
+          activeId={activeDeploymentId}
+          onSelect={(id) => setActiveDeploymentId(id)}
+        />
+      ) : null}
+
+      {tab === 'console' && canDelete ? (
+        <ConsoleTab
+          deployments={deployments.data ?? []}
+          activeId={activeDeploymentId}
+          onSelect={(id) => setActiveDeploymentId(id)}
         />
       ) : null}
 
@@ -392,13 +440,19 @@ function SummaryStrip({
 function Tabs({
   value,
   onChange,
+  showConsole,
 }: {
   value: TopTab;
   onChange: (t: TopTab) => void;
+  showConsole: boolean;
 }) {
   const tabs: { id: TopTab; label: string }[] = [
     { id: 'overview', label: 'Overview' },
-    { id: 'activity', label: 'Activity' },
+    { id: 'metrics', label: 'Metrics' },
+    { id: 'deployments', label: 'Deployments' },
+    { id: 'builds', label: 'Builds' },
+    { id: 'logs', label: 'Logs' },
+    ...(showConsole ? [{ id: 'console' as const, label: 'Console' }] : []),
     { id: 'networking', label: 'Networking' },
     { id: 'storage', label: 'Storage' },
     { id: 'settings', label: 'Settings' },
@@ -438,9 +492,6 @@ function OverviewTab({
   onStop,
   activeId,
   onSelect,
-  workspaceSlug,
-  projectSlug,
-  serviceSlug,
 }: {
   service: ServiceSummary | undefined;
   deployments: DeploymentSummary[];
@@ -450,20 +501,11 @@ function OverviewTab({
   onStop: (id: string) => void;
   activeId: string | null;
   onSelect: (id: string) => void;
-  workspaceSlug: string;
-  projectSlug: string;
-  serviceSlug: string;
 }) {
   if (!service) return null;
   const recent = deployments.slice(0, 5);
   return (
     <Stack gap={4}>
-      <ServiceMetricsTab
-        service={service}
-        workspaceSlug={workspaceSlug}
-        projectSlug={projectSlug}
-        serviceSlug={serviceSlug}
-      />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card className="p-5">
           <div className="mb-3 text-[10px] font-medium uppercase tracking-wider text-[var(--color-muted)]">
@@ -743,106 +785,6 @@ function formatDuration(d: DeploymentSummary): string {
   if (mins < 60) return `${mins}m`;
   const hours = Math.round(mins / 60);
   return `${hours}h`;
-}
-
-/* ---------- activity tab (unifies deployments/builds/logs/console) ---------- */
-
-function ActivityTab({
-  view,
-  onViewChange,
-  deployments,
-  activeId,
-  onSelect,
-  onStop,
-  onRestart,
-  workspaceSlug,
-  projectSlug,
-  serviceSlug,
-  canManage,
-  canConsole,
-}: {
-  view: ActivityView;
-  onViewChange: (v: ActivityView) => void;
-  deployments: DeploymentSummary[];
-  activeId: string | null;
-  onSelect: (id: string) => void;
-  onStop: (id: string) => void;
-  onRestart: (id: string) => void;
-  workspaceSlug: string;
-  projectSlug: string;
-  serviceSlug: string;
-  canManage: boolean;
-  canConsole: boolean;
-}) {
-  const options: { id: ActivityView; label: string }[] = [
-    { id: 'deployments', label: 'Deployments' },
-    { id: 'builds', label: 'Builds' },
-    { id: 'logs', label: 'Logs' },
-    ...(canConsole ? [{ id: 'console' as const, label: 'Console' }] : []),
-  ];
-  return (
-    <Stack gap={3}>
-      <div className="inline-flex w-fit rounded-md border border-[var(--color-border)] p-0.5 text-xs">
-        {options.map((o) => {
-          const active = o.id === view;
-          return (
-            <button
-              key={o.id}
-              type="button"
-              onClick={() => onViewChange(o.id)}
-              className={[
-                'rounded-[5px] px-2.5 py-1 transition-colors',
-                active
-                  ? 'bg-[var(--color-fg)] text-[var(--color-bg)]'
-                  : 'text-[var(--color-muted)] hover:text-[var(--color-fg)]',
-              ].join(' ')}
-            >
-              {o.label}
-            </button>
-          );
-        })}
-      </div>
-      {view === 'deployments' ? (
-        <DeploymentsTable
-          deployments={deployments}
-          canManage={canManage}
-          activeId={activeId}
-          onSelect={(id) => {
-            onSelect(id);
-            onViewChange('logs');
-          }}
-          onStop={onStop}
-          onRestart={onRestart}
-        />
-      ) : null}
-      {view === 'builds' ? (
-        <BuildsTab
-          workspaceSlug={workspaceSlug}
-          projectSlug={projectSlug}
-          serviceSlug={serviceSlug}
-          canManage={canManage}
-          onViewLogs={(deploymentId) => {
-            onSelect(deploymentId);
-            onViewChange('logs');
-          }}
-        />
-      ) : null}
-      {view === 'logs' ? (
-        <LogsTab
-          deployments={deployments}
-          activeId={activeId}
-          onSelect={onSelect}
-        />
-      ) : null}
-      {view === 'console' && canConsole ? (
-        <ConsoleTab
-          deployments={deployments}
-          activeId={activeId}
-          onSelect={onSelect}
-        />
-      ) : null}
-    </Stack>
-  );
 }
 
 function activityStatus(
