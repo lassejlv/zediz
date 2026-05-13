@@ -1,7 +1,8 @@
-import { createFileRoute } from '@tanstack/react-router';
+import { createFileRoute, useSearch } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, Trash2 } from 'lucide-react';
+import { useRegisterActivity } from '@/components/app-shell';
 import {
   serviceQuery,
   serviceDeploymentsQuery,
@@ -42,22 +43,29 @@ import {
 } from '@/lib/builds';
 import type { BuildSummary, DeploymentSummary, ServiceSummary } from '@/lib/types';
 
+interface ServiceSearch {
+  tab?: TopTab;
+  view?: ActivityView;
+}
+
 export const Route = createFileRoute(
   '/w/$workspaceSlug/projects/$projectSlug/$serviceSlug',
 )({
   component: ServicePage,
+  validateSearch: (raw: Record<string, unknown>): ServiceSearch => {
+    const tab = raw.tab;
+    const view = raw.view;
+    const validTabs: TopTab[] = ['overview', 'activity', 'networking', 'storage', 'settings'];
+    const validViews: ActivityView[] = ['deployments', 'builds', 'logs', 'console'];
+    return {
+      tab: typeof tab === 'string' && validTabs.includes(tab as TopTab) ? (tab as TopTab) : undefined,
+      view: typeof view === 'string' && validViews.includes(view as ActivityView) ? (view as ActivityView) : undefined,
+    };
+  },
 });
 
-type Tab =
-  | 'overview'
-  | 'metrics'
-  | 'deployments'
-  | 'builds'
-  | 'domains'
-  | 'volume'
-  | 'logs'
-  | 'console'
-  | 'settings';
+type TopTab = 'overview' | 'activity' | 'networking' | 'storage' | 'settings';
+type ActivityView = 'deployments' | 'builds' | 'logs' | 'console';
 
 function ServicePage() {
   const { workspaceSlug, projectSlug, serviceSlug } = Route.useParams();
@@ -79,9 +87,14 @@ function ServicePage() {
   const stop = useStopDeployment();
   const restart = useRestartDeployment();
 
+  const search = useSearch({
+    from: '/w/$workspaceSlug/projects/$projectSlug/$serviceSlug',
+  });
+
   const [error, setError] = useState<string | null>(null);
   const [activeDeploymentId, setActiveDeploymentId] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>('overview');
+  const [tab, setTab] = useState<TopTab>(search.tab ?? 'overview');
+  const [activityView, setActivityView] = useState<ActivityView>(search.view ?? 'deployments');
 
   const latest = deployments.data?.[0];
   useEffect(() => {
@@ -134,6 +147,24 @@ function ServicePage() {
   const svc = service.data;
   const serviceStatus = computeServiceStatus(latest);
   const deployLabel = computeDeployLabel(latest);
+
+  // Push in-flight deploys to the global activity strip.
+  const inFlightStatus = useMemo(() => activityStatus(latest), [latest]);
+  useRegisterActivity(
+    svc && latest && inFlightStatus
+      ? {
+          key: `service:${svc.id}`,
+          status: inFlightStatus,
+          title: (
+            <>
+              <span className="font-mono">{svc.name}</span> · {latest.status}
+            </>
+          ),
+          detail: truncateImage(latest.image_ref),
+          to: `/w/${workspaceSlug}/projects/${projectSlug}/${serviceSlug}?tab=activity`,
+        }
+      : null,
+  );
 
   return (
     <Stack gap={6}>
@@ -197,54 +228,42 @@ function ServicePage() {
         />
       ) : null}
 
-      <Tabs value={tab} onChange={setTab} showConsole={canDelete} />
+      <Tabs value={tab} onChange={setTab} />
 
       {tab === 'overview' ? (
         <OverviewTab
           service={svc}
           deployments={deployments.data ?? []}
           canManage={canDeploy}
-          onSeeAll={() => setTab('deployments')}
+          onSeeAll={() => setTab('activity')}
           onRestart={(id) => restart.mutate(id)}
           onStop={(id) => stop.mutate(id)}
           activeId={activeDeploymentId}
           onSelect={(id) => setActiveDeploymentId(id)}
-        />
-      ) : null}
-
-      {tab === 'metrics' && svc ? (
-        <ServiceMetricsTab
-          service={svc}
           workspaceSlug={workspaceSlug}
           projectSlug={projectSlug}
           serviceSlug={serviceSlug}
         />
       ) : null}
 
-      {tab === 'deployments' ? (
-        <DeploymentsTable
+      {tab === 'activity' ? (
+        <ActivityTab
+          view={activityView}
+          onViewChange={setActivityView}
           deployments={deployments.data ?? []}
-          canManage={canDeploy}
           activeId={activeDeploymentId}
-          onSelect={(id) => {
-            setActiveDeploymentId(id);
-            setTab('logs');
-          }}
+          onSelect={(id) => setActiveDeploymentId(id)}
           onStop={(id) => stop.mutate(id)}
           onRestart={(id) => restart.mutate(id)}
-        />
-      ) : null}
-
-      {tab === 'volume' && svc ? (
-        <ServiceVolumeTab
-          service={svc}
           workspaceSlug={workspaceSlug}
           projectSlug={projectSlug}
+          serviceSlug={serviceSlug}
           canManage={canDeploy}
+          canConsole={canDelete}
         />
       ) : null}
 
-      {tab === 'domains' ? (
+      {tab === 'networking' ? (
         <DomainsSection
           workspaceSlug={workspaceSlug}
           projectSlug={projectSlug}
@@ -254,32 +273,12 @@ function ServicePage() {
         />
       ) : null}
 
-      {tab === 'builds' ? (
-        <BuildsTab
+      {tab === 'storage' && svc ? (
+        <ServiceVolumeTab
+          service={svc}
           workspaceSlug={workspaceSlug}
           projectSlug={projectSlug}
-          serviceSlug={serviceSlug}
           canManage={canDeploy}
-          onViewLogs={(deploymentId) => {
-            setActiveDeploymentId(deploymentId);
-            setTab('logs');
-          }}
-        />
-      ) : null}
-
-      {tab === 'logs' ? (
-        <LogsTab
-          deployments={deployments.data ?? []}
-          activeId={activeDeploymentId}
-          onSelect={(id) => setActiveDeploymentId(id)}
-        />
-      ) : null}
-
-      {tab === 'console' && canDelete ? (
-        <ConsoleTab
-          deployments={deployments.data ?? []}
-          activeId={activeDeploymentId}
-          onSelect={(id) => setActiveDeploymentId(id)}
         />
       ) : null}
 
@@ -393,21 +392,15 @@ function SummaryStrip({
 function Tabs({
   value,
   onChange,
-  showConsole,
 }: {
-  value: Tab;
-  onChange: (t: Tab) => void;
-  showConsole: boolean;
+  value: TopTab;
+  onChange: (t: TopTab) => void;
 }) {
-  const tabs: { id: Tab; label: string }[] = [
+  const tabs: { id: TopTab; label: string }[] = [
     { id: 'overview', label: 'Overview' },
-    { id: 'metrics', label: 'Metrics' },
-    { id: 'deployments', label: 'Deployments' },
-    { id: 'builds', label: 'Builds' },
-    { id: 'domains', label: 'Domains' },
-    { id: 'volume', label: 'Volume' },
-    { id: 'logs', label: 'Logs' },
-    ...(showConsole ? [{ id: 'console' as const, label: 'Console' }] : []),
+    { id: 'activity', label: 'Activity' },
+    { id: 'networking', label: 'Networking' },
+    { id: 'storage', label: 'Storage' },
     { id: 'settings', label: 'Settings' },
   ];
   return (
@@ -445,6 +438,9 @@ function OverviewTab({
   onStop,
   activeId,
   onSelect,
+  workspaceSlug,
+  projectSlug,
+  serviceSlug,
 }: {
   service: ServiceSummary | undefined;
   deployments: DeploymentSummary[];
@@ -454,11 +450,20 @@ function OverviewTab({
   onStop: (id: string) => void;
   activeId: string | null;
   onSelect: (id: string) => void;
+  workspaceSlug: string;
+  projectSlug: string;
+  serviceSlug: string;
 }) {
   if (!service) return null;
   const recent = deployments.slice(0, 5);
   return (
     <Stack gap={4}>
+      <ServiceMetricsTab
+        service={service}
+        workspaceSlug={workspaceSlug}
+        projectSlug={projectSlug}
+        serviceSlug={serviceSlug}
+      />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card className="p-5">
           <div className="mb-3 text-[10px] font-medium uppercase tracking-wider text-[var(--color-muted)]">
@@ -738,6 +743,118 @@ function formatDuration(d: DeploymentSummary): string {
   if (mins < 60) return `${mins}m`;
   const hours = Math.round(mins / 60);
   return `${hours}h`;
+}
+
+/* ---------- activity tab (unifies deployments/builds/logs/console) ---------- */
+
+function ActivityTab({
+  view,
+  onViewChange,
+  deployments,
+  activeId,
+  onSelect,
+  onStop,
+  onRestart,
+  workspaceSlug,
+  projectSlug,
+  serviceSlug,
+  canManage,
+  canConsole,
+}: {
+  view: ActivityView;
+  onViewChange: (v: ActivityView) => void;
+  deployments: DeploymentSummary[];
+  activeId: string | null;
+  onSelect: (id: string) => void;
+  onStop: (id: string) => void;
+  onRestart: (id: string) => void;
+  workspaceSlug: string;
+  projectSlug: string;
+  serviceSlug: string;
+  canManage: boolean;
+  canConsole: boolean;
+}) {
+  const options: { id: ActivityView; label: string }[] = [
+    { id: 'deployments', label: 'Deployments' },
+    { id: 'builds', label: 'Builds' },
+    { id: 'logs', label: 'Logs' },
+    ...(canConsole ? [{ id: 'console' as const, label: 'Console' }] : []),
+  ];
+  return (
+    <Stack gap={3}>
+      <div className="inline-flex w-fit rounded-md border border-[var(--color-border)] p-0.5 text-xs">
+        {options.map((o) => {
+          const active = o.id === view;
+          return (
+            <button
+              key={o.id}
+              type="button"
+              onClick={() => onViewChange(o.id)}
+              className={[
+                'rounded-[5px] px-2.5 py-1 transition-colors',
+                active
+                  ? 'bg-[var(--color-fg)] text-[var(--color-bg)]'
+                  : 'text-[var(--color-muted)] hover:text-[var(--color-fg)]',
+              ].join(' ')}
+            >
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
+      {view === 'deployments' ? (
+        <DeploymentsTable
+          deployments={deployments}
+          canManage={canManage}
+          activeId={activeId}
+          onSelect={(id) => {
+            onSelect(id);
+            onViewChange('logs');
+          }}
+          onStop={onStop}
+          onRestart={onRestart}
+        />
+      ) : null}
+      {view === 'builds' ? (
+        <BuildsTab
+          workspaceSlug={workspaceSlug}
+          projectSlug={projectSlug}
+          serviceSlug={serviceSlug}
+          canManage={canManage}
+          onViewLogs={(deploymentId) => {
+            onSelect(deploymentId);
+            onViewChange('logs');
+          }}
+        />
+      ) : null}
+      {view === 'logs' ? (
+        <LogsTab
+          deployments={deployments}
+          activeId={activeId}
+          onSelect={onSelect}
+        />
+      ) : null}
+      {view === 'console' && canConsole ? (
+        <ConsoleTab
+          deployments={deployments}
+          activeId={activeId}
+          onSelect={onSelect}
+        />
+      ) : null}
+    </Stack>
+  );
+}
+
+function activityStatus(
+  d: DeploymentSummary | undefined,
+): 'building' | 'deploying' | 'pending' | 'errored' | null {
+  if (!d) return null;
+  if (d.status === 'building') return 'building';
+  if (d.status === 'pending') return 'pending';
+  if (d.status === 'placing' || d.status === 'pulling' || d.status === 'starting')
+    return 'deploying';
+  if (d.status === 'errored' || d.status === 'failing') return 'errored';
+  return null;
 }
 
 /* ---------- logs tab ---------- */

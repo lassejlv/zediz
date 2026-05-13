@@ -15,6 +15,7 @@ import {
   CommandKTrigger,
   CommandPaletteProvider,
 } from '@/components/app-shell';
+import { CommandPalette } from '@/components/command-palette';
 
 interface RouterContext {
   queryClient: QueryClient;
@@ -105,6 +106,7 @@ function RootComponent() {
           <main className="mx-auto max-w-6xl px-6 py-10">
             <Outlet />
           </main>
+          <CommandPalette />
         </div>
       </ActivityStripProvider>
     </CommandPaletteProvider>

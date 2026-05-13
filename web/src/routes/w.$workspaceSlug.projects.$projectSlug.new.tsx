@@ -715,6 +715,16 @@ function NumberField({
         />
         <span className="text-xs text-[var(--color-muted)]">{suffix}</span>
       </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="mt-2 h-1 w-full cursor-pointer appearance-none rounded-full bg-[var(--color-border)] accent-[var(--color-accent)]"
+        aria-label={`${label} slider`}
+      />
     </Field>
   );
 }

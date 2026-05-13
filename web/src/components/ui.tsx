@@ -364,11 +364,13 @@ export function EmptyState({
   title,
   body,
   cta,
+  icon,
   className,
 }: {
   title: ReactNode;
   body?: ReactNode;
   cta?: ReactNode;
+  icon?: ReactNode;
   className?: string;
 }) {
   return (
@@ -378,6 +380,11 @@ export function EmptyState({
         className ?? '',
       ].join(' ')}
     >
+      {icon ? (
+        <div className="mx-auto mb-3 inline-flex h-9 w-9 items-center justify-center rounded-md border border-[var(--color-border)] text-[var(--color-muted)]">
+          {icon}
+        </div>
+      ) : null}
       <div className="text-sm font-medium text-[var(--color-fg)]">{title}</div>
       {body ? (
         <div className="mx-auto mt-1.5 max-w-sm text-xs text-[var(--color-muted)]">

@@ -141,6 +141,17 @@ function ProjectBoard() {
               projectSlug={projectSlug}
             />
           ))}
+          {canCreate ? (
+            <Link
+              to="/w/$workspaceSlug/projects/$projectSlug/new"
+              params={{ workspaceSlug, projectSlug }}
+              className="group flex min-h-[170px] items-center justify-center rounded-lg border border-dashed border-[var(--color-border)] text-[var(--color-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-fg)]"
+            >
+              <span className="inline-flex items-center gap-1.5 text-xs">
+                <Plus className="h-3.5 w-3.5" /> add service
+              </span>
+            </Link>
+          ) : null}
         </div>
       )}
     </div>
